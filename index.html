@@ -146,13 +146,13 @@ function kit(st,flags){
 
 const BALLS={
   none:{name:"Standard",when:"—",short:"no swap",effect:"Play the rack straight."},
-  ghost:{name:"Ghost",when:"in flight",short:"passes through one ball",effect:"Passes clean through the first ball it touches, then behaves normally."},
-  bomb:{name:"Bomb",when:"when pocketed",short:"scatters the pocket",effect:"Pocketing it shoves every ball near that pocket away from it."},
-  anchor:{name:"Anchor",when:"in flight",short:"won't be moved",effect:"Barely budges when a rival hits it. Park it in front of a pocket and it stays."},
-  magnet:{name:"Magnet",when:"in flight",short:"near misses drop",effect:"Rolls slowly past a pocket and the pocket takes it. Yours only."},
-  steal:{name:"Steal",when:"when pocketed",short:"always yours",effect:"Counts for you no matter who sinks it."},
-  brick:{name:"Brick",when:"in flight",short:"hits like two",effect:"Heavy. Moves whatever it strikes far harder than it should."},
-  wild:{name:"Wild",when:"when pocketed",short:"counts as anything",effect:"Counts as whichever group you need when it drops."},
+  ghost:{name:"Ghost",color:"#b9e8ff",sigil:"◌",when:"in flight",short:"passes through one ball",effect:"Passes clean through the first ball it touches, then behaves normally."},
+  bomb:{name:"Bomb",color:"#ff7a45",sigil:"✹",when:"when pocketed",short:"scatters the pocket",effect:"Pocketing it shoves every ball near that pocket away from it."},
+  anchor:{name:"Anchor",color:"#91a5b9",sigil:"⚓",when:"in flight",short:"won't be moved",effect:"Barely budges when a rival hits it. Park it in front of a pocket and it stays."},
+  magnet:{name:"Magnet",color:"#ee6b79",sigil:"∩",when:"in flight",short:"near misses drop",effect:"Rolls slowly past a pocket and the pocket takes it. Yours only."},
+  steal:{name:"Steal",color:"#b48cff",sigil:"◆",when:"when pocketed",short:"always yours",effect:"Counts for the shooter no matter which group it originally belonged to."},
+  brick:{name:"Brick",color:"#d38a55",sigil:"▦",when:"in flight",short:"hits like two",effect:"Heavy. Moves whatever it strikes far harder than it should."},
+  wild:{name:"Wild",color:"#f1cf5b",sigil:"★",when:"when pocketed",short:"counts as anything",effect:"Counts as whichever group the shooter needs when it drops."},
 };
 const BALL_IDS=Object.keys(BALLS);
 const POWER_SETS={
@@ -227,7 +227,7 @@ const MODES={
   cutthroat:{name:"Cutthroat",seats:[2,3,4],
     blurb:"Every player owns a group and shoots at everybody else's. Last player with a ball still up wins."},
   king:{name:"King of the Table",seats:[2,3,4],campaign:true,
-    blurb:"A solo run against an endless line of generated challengers. Build a bank and streak, take richer best-of-three sets, survive 2v2 nights, and protect long runs with five-win insurance."},
+    blurb:"A solo run against an endless line of generated challengers. Play one rack, then take the next opponent or offer a rematch that can grow only into a best of three."},
 };
 const MODE_IDS=Object.keys(MODES);
 const modesFor=n=>MODE_IDS.filter(m=>MODES[m].seats.includes(n));
@@ -605,6 +605,54 @@ function HeatCloth({id,g,balls}){
           opacity={Math.min(1,.72+c2*.08)}/></g>);})}
   </g>);}
 
+function PowerSkin({type,r,id}){const d=BALLS[type]||BALLS.none,clip=`url(#bclip${id})`;
+  return(<g clipPath={clip} pointerEvents="none">
+    <title>{`${d.name} Power Ball · ${d.short}`}</title>
+    {type==="ghost"&&<g>
+      <circle r={r} fill="#dff7ff" opacity=".34"/>
+      {[.22,.5,.78].map((x,i)=><path key={i} d={`M${-r} ${-r+x*r*2}Q0 ${-r+(x+.25)*r*2} ${r} ${-r+x*r*2}`}
+        fill="none" stroke="#c9f2ff" strokeWidth=".12" strokeOpacity={.42+i*.12}/>) }
+      <circle cx={-.34*r} cy={-.12*r} r={.13*r} fill="#fff" opacity=".85"/><circle cx={.34*r} cy={-.12*r} r={.13*r} fill="#fff" opacity=".85"/>
+    </g>}
+    {type==="bomb"&&<g>
+      <circle r={r} fill="#301715" opacity=".76"/><circle r={r*.48} fill="#ff6b36" opacity=".38"/>
+      {Array.from({length:8},(_,i)=>{const a=i*Math.PI/4,ri=r*.38,ro=r*.96;return <line key={i} x1={Math.cos(a)*ri} y1={Math.sin(a)*ri}
+        x2={Math.cos(a)*ro} y2={Math.sin(a)*ro} stroke={i%2?"#ffba68":"#ff5638"} strokeWidth={i%2?.1:.16} strokeLinecap="round"/>;})}
+      <path d={`M${r*.2} ${-r*.46}Q${r*.55} ${-r*.94} ${r*.82} ${-r*.72}`} fill="none" stroke="#f3d094" strokeWidth=".15" strokeLinecap="round"/>
+      <circle cx={r*.83} cy={-r*.73} r={r*.13} fill="#fff2a6"/>
+    </g>}
+    {type==="anchor"&&<g>
+      <circle r={r} fill="#26323d" opacity=".72"/>
+      <path d={`M0 ${-r*.83}V${r*.48}M${-r*.42} ${-r*.45}H${r*.42}M${-r*.68} ${r*.18}Q${-r*.55} ${r*.77} 0 ${r*.66}Q${r*.55} ${r*.77} ${r*.68} ${r*.18}`}
+        fill="none" stroke="#d7e1e9" strokeWidth=".2" strokeLinecap="round" strokeLinejoin="round"/>
+      <circle cy={-r*.71} r={r*.16} fill="none" stroke="#d7e1e9" strokeWidth=".13"/>
+    </g>}
+    {type==="magnet"&&<g>
+      <circle r={r} fill="#211d2b" opacity=".68"/>
+      <path d={`M${-r*.7} ${r*.54}V0A${r*.7} ${r*.7} 0 0 1 ${r*.7} 0V${r*.54}`} fill="none" stroke="#e7edf1" strokeWidth={r*.34}/>
+      <path d={`M${-r*.7} ${r*.54}V${r*.13}`} stroke="#4a9fea" strokeWidth={r*.34}/><path d={`M${r*.7} ${r*.54}V${r*.13}`} stroke="#ef5e6c" strokeWidth={r*.34}/>
+      <rect x={-r*.86} y={r*.43} width={r*.32} height={r*.25} rx=".07" fill="#d9f2ff"/><rect x={r*.54} y={r*.43} width={r*.32} height={r*.25} rx=".07" fill="#ffe0de"/>
+    </g>}
+    {type==="steal"&&<g>
+      <circle r={r} fill="#241a35" opacity=".7"/>
+      <path d={`M${-r} ${-r*.34}Q0 ${-r*.64} ${r} ${-r*.2}V${r*.38}Q0 ${r*.08} ${-r} ${r*.34}Z`} fill="#110e18" opacity=".88"/>
+      <path d={`M${-r*.62} ${-.12*r}Q${-r*.31} ${-.34*r} ${-.08*r} ${-.02*r}Q${-.34*r} ${r*.22} ${-.62*r} ${-.12*r}Z
+        M${r*.62} ${-.12*r}Q${r*.31} ${-.34*r} ${r*.08} ${-.02*r}Q${.34*r} ${r*.22} ${.62*r} ${-.12*r}Z`} fill="#d6c4ff"/>
+      <path d={`M0 ${r*.15}L${r*.38} ${r*.54}L0 ${r*.83}L${-r*.38} ${r*.54}Z`} fill="#9d73e8" opacity=".72"/>
+    </g>}
+    {type==="brick"&&<g>
+      <circle r={r} fill="#713b24" opacity=".78"/>
+      {[-.52,0,.52].map((y,i)=><line key={i} x1={-r} y1={y*r} x2={r} y2={y*r} stroke="#efb17e" strokeWidth=".1" opacity=".7"/>)}
+      {[[-.48,-.52], [.48,-.52],[0,0],[-.48,.52],[.48,.52]].map(([x,y],i)=><line key={"v"+i} x1={x*r} y1={(y-.26)*r} x2={x*r} y2={(y+.26)*r} stroke="#efb17e" strokeWidth=".1" opacity=".7"/>)}
+    </g>}
+    {type==="wild"&&<g>
+      {Array.from({length:8},(_,i)=>{const a=i*Math.PI/4-Math.PI/2,b=a+Math.PI/4;return <path key={i} d={`M0 0L${Math.cos(a)*r*1.2} ${Math.sin(a)*r*1.2}A${r*1.2} ${r*1.2} 0 0 1 ${Math.cos(b)*r*1.2} ${Math.sin(b)*r*1.2}Z`}
+        fill={["#f4ce4f","#ee735c","#9a75e9","#4bc7bd"][i%4]} opacity=".72"/>;})}
+      <path d={`M0 ${-r*.66}L${r*.17} ${-r*.2}L${r*.65} ${-r*.2}L${r*.27} ${r*.08}L${r*.42} ${r*.56}L0 ${r*.27}L${-r*.42} ${r*.56}L${-r*.27} ${r*.08}L${-r*.65} ${-r*.2}L${-r*.17} ${-r*.2}Z`}
+        fill="#fff9d7" stroke="#fff" strokeWidth=".08"/>
+    </g>}
+  </g>);}
+
 function Ball({b,id,ring}){const {num,col,group}=ballInfo(b.n);
   const cue=b.n===0, r=BR;
   // The pole, projected. Its tilt decides where the numbered cap sits and how
@@ -631,16 +679,26 @@ function Ball({b,id,ring}){const {num,col,group}=ballInfo(b.n);
     {numOn&&!cue&&<text x={capX} y={capY+r*.145} textAnchor="middle" fontFamily={F.body}
       fontWeight="700" fontSize={r*.5} fill="#17191c" opacity={Math.min(1,(Math.abs(pz)-0.62)*4)}
       transform={`rotate(${nAng} ${capX} ${capY})`}>{num}</text>}
+    {b.power&&<PowerSkin type={b.power} r={r} id={id}/>} 
     <circle r={r} fill={`url(#sph${id})`}/>
     <circle cx={-r*.33} cy={-r*.35} r={r*.2} fill="#fff" opacity=".42"/>
     {ring&&<circle r={r+.24} fill="none" stroke={ring} strokeWidth=".34"/>}
     {b.power&&<g pointerEvents="none">
-      <circle r={r+0.42} fill="none" stroke={(BALLS[b.power]||BALLS.none).color||"#f0cf7c"} strokeWidth=".24" strokeOpacity=".92"/>
-      <circle cx={r*.67} cy={-r*.67} r=".42" fill="#0b0d10" stroke="#f0cf7c" strokeWidth=".12"/>
-      <text x={r*.67} y={-r*.67+.18} textAnchor="middle" fontFamily={F.mono} fontSize=".48" fontWeight="700" fill="#f6df9a">
-        {{ghost:"G",bomb:"!",anchor:"A",magnet:"M",steal:"S",brick:"B",wild:"W"}[b.power]||"P"}</text>
+      <circle r={r+0.43} fill="none" stroke={BALLS[b.power].color} strokeWidth=".24" strokeOpacity=".96"/>
+      {b.power==="ghost"&&<circle r={r+.67} fill="none" stroke={BALLS[b.power].color} strokeWidth=".12" strokeOpacity=".32"/>}
+      <circle cx={r*.7} cy={-r*.7} r=".43" fill="#0b0d10" stroke={BALLS[b.power].color} strokeWidth=".13"/>
+      <text x={r*.7} y={-r*.7+.18} textAnchor="middle" fontFamily={F.body} fontSize=".45" fontWeight="700" fill={BALLS[b.power].color}>{BALLS[b.power].sigil}</text>
+      <circle cx={-r*.68} cy={r*.68} r=".35" fill="#f5f2e9" stroke="#15181b" strokeWidth=".1"/>
+      <text x={-r*.68} y={r*.68+.14} textAnchor="middle" fontFamily={F.mono} fontSize=".38" fontWeight="700" fill="#17191c">{num}</text>
     </g>}
   </g>);}
+
+function GroupToken({group,color,size=22}){const stripe=group==="stripe";
+  return <span title={stripe?"Stripes":"Solids"} style={{width:size,height:size,borderRadius:"50%",display:"inline-flex",alignItems:"center",justifyContent:"center",
+    position:"relative",overflow:"hidden",flexShrink:0,background:stripe?"#f2f0e9":color,border:`2px solid ${color}`,boxShadow:"0 1px 4px rgba(0,0,0,.45)"}}>
+    {stripe&&<span style={{position:"absolute",left:0,right:0,top:"34%",height:"32%",background:color}}/>}
+    <span style={{position:"relative",width:size*.32,height:size*.32,borderRadius:"50%",background:"#f7f5ef",border:"1px solid rgba(0,0,0,.22)"}}/>
+  </span>;}
 
 // Butt cap, linen wrap, forearm, silver joint collar, maple shaft, ivory
 // ferrule, blue tip — built as a chain of tapered quads down one axis.
@@ -1772,13 +1830,17 @@ const KING_NICK=["Side Door","Cold Rack","Two-Rail","No Chalk","Railbird","Quiet
 const KING_LAST=["Vega","Banks","Mercer","Flores","Price","Okafor","Tran","Santos","Reed","Bell"];
 const KING_TABLES=["regulation","octagon","gates","crossroads","keyhole","bowtie","pillars","offset"];
 function makeKingChallenge(streak){
-  const rating=Math.min(850,285+streak*43+Math.floor(Math.random()*76));
+  // The random flavour never overwhelms progression: every conquered opponent
+  // raises the minimum by 52, while the roll is capped at 30. The next person
+  // is therefore always harder than the previous one.
+  const rating=Math.min(850,300+streak*52+Math.floor(streak/3)*10+Math.floor(Math.random()*31));
   const team=streak>1&&(streak+1)%4===0;
   return{name:`${KING_FIRST[Math.floor(Math.random()*KING_FIRST.length)]} “${KING_NICK[Math.floor(Math.random()*KING_NICK.length)]}” ${KING_LAST[Math.floor(Math.random()*KING_LAST.length)]}`,
     rating,team,tid:KING_TABLES[(streak+Math.floor(Math.random()*KING_TABLES.length))%KING_TABLES.length],
     char:CHAR_IDS[Math.floor(Math.random()*CHAR_IDS.length)],powerSet:POWER_SET_IDS[(streak+Math.floor(Math.random()*4))%4]};
 }
-const freshKing=()=>({streak:0,bank:0,buzz:0,challenge:makeKingChallenge(0),series:null,last:null,insurance:null});
+const KING_START_BANK=60;
+const freshKing=()=>({streak:0,bank:KING_START_BANK,buzz:0,challenge:makeKingChallenge(0),series:null,decision:null,last:"The house fronts you $60. Build it from here."});
 
 // Screen router plus every setting the match needs. App owns the setup; Game
 // owns everything that happens once the balls are on the table.
@@ -1799,20 +1861,23 @@ function App(){
   useEffect(()=>{const ok=modesFor(count); if(!ok.includes(mode))setMode(ok[0]);},[count]);
 
   const upd=(i,p)=>setSeats(s=>s.map((x,j)=>j===i?{...x,...p}:x));
-  const launchKing=(target=1,challenge=king.challenge,insurance=false)=>{
-    setKing(k=>({...k,challenge,insurance:null,series:{target,us:0,them:0,insurance}}));
+  const launchKing=rematch=>{
+    setKing(k=>({...k,decision:null,series:k.series?{...k.series,rematch:!!rematch}:{target:2,us:0,them:0,rematch:false}}));
     setKingKey(k=>k+1);setScreen("kingGame");};
+  const advanceKing=won=>setKing(k=>{const streak=won?k.streak+1:0,bonus=won?12+Math.round(k.challenge.rating/30):0;
+    return{...k,bank:k.bank+bonus,streak,buzz:k.buzz,series:null,decision:null,challenge:makeKingChallenge(streak),
+      last:won?`Win banked · +$${bonus} table bonus. A harder challenger stepped up.`:"Loss accepted. The bank stays, but the streak resets."};});
   const onKingResult=r=>setKing(k=>{
-    const s=k.series,us=s.us+(r.humanWin?1:0),them=s.them+(r.humanWin?0:1);
+    const s=k.series||{target:2,us:0,them:0,rematch:false},us=s.us+(r.humanWin?1:0),them=s.them+(r.humanWin?0:1);
     const rackPay=r.humanWin?18+Math.round(k.challenge.rating/48)+k.streak*2:4;
-    const bank=k.bank+rackPay,buzz=Math.max(0,r.buzz*.65),done=us>=s.target||them>=s.target;
-    if(!done){setTimeout(()=>setKingKey(x=>x+1),0);return{...k,bank,buzz,series:{...s,us,them},last:`Rack ${us+them}: ${r.humanWin?"won":"lost"} · +$${rackPay}`};}
+    const bank=k.bank+rackPay,buzz=Math.max(0,r.buzz*.65),done=us>=2||them>=2;
+    if(!done){setTimeout(()=>setScreen("king"),0);return{...k,bank,buzz,series:{target:2,us,them,rematch:s.rematch},
+      decision:{lastWon:r.humanWin,racks:us+them},last:`Rack ${us+them}: ${r.humanWin?"won":"lost"} · +$${rackPay} · matchup ${us}–${them}`};}
     const won=us>them;
-    if(won){const bonus=s.target===2?32+Math.round(k.challenge.rating/18):0,streak=k.streak+1;
-      setTimeout(()=>setScreen("king"),0);return{...k,bank:bank+bonus,buzz,streak,series:null,last:`${s.target===2?"Series":"Rack"} won · +$${rackPay+bonus}`,challenge:makeKingChallenge(streak),insurance:null};}
-    if(k.streak>=5&&s.target===1&&!s.insurance){setTimeout(()=>setScreen("king"),0);
-      return{...k,bank,buzz,series:null,last:"Rack lost · your five-win insurance is live",insurance:k.challenge};}
-    setTimeout(()=>setScreen("king"),0);return{...k,bank,buzz,streak:0,series:null,last:"The run ended. The bank is safe.",challenge:makeKingChallenge(0),insurance:null};
+    const bonus=won?28+Math.round(k.challenge.rating/22):0,streak=won?k.streak+1:0;
+    setTimeout(()=>setScreen("king"),0);return{...k,bank:bank+bonus,buzz,streak,series:null,decision:null,
+      last:won?`Matchup won ${us}–${them} · +$${rackPay+bonus}. A harder challenger stepped up.`:`Matchup lost ${us}–${them}. The bank is safe; the streak resets.`,
+      challenge:makeKingChallenge(streak)};
   });
 
   function Select({id,value,options,onPick,width}){
@@ -1863,40 +1928,37 @@ function App(){
 
   if(screen==="king"){
     const q=king.challenge,tier=BOTS.reduce((a,b)=>Math.abs(b.rating-q.rating)<Math.abs(a.rating-q.rating)?b:a,BOTS[0]);
-    const single=18+Math.round(q.rating/48)+king.streak*2,series=single*2+32+Math.round(q.rating/18);
+    const rackPay=18+Math.round(q.rating/48)+king.streak*2,s=king.series||{us:0,them:0},deciding=s.us===1&&s.them===1;
     return(<Shell wide><Head onBack={()=>setScreen("setup")} title="King of the Table"/>
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:14}}>
         {[["WIN STREAK",king.streak,"#efc486"],["BANK",`$${king.bank}`,C.good],["BUZZ",Math.round(king.buzz),king.buzz>=85?C.warn:C.accent]].map(([k,v,c])=><div key={k} style={{...panel,padding:"14px 16px"}}>
           <div style={{...label,fontSize:9}}>{k}</div><div style={{fontFamily:F.display,fontSize:28,fontWeight:700,color:c,marginTop:3}}>{v}</div></div>)}
       </div>
       {king.last&&<div style={{padding:"9px 12px",borderRadius:9,background:"rgba(106,168,138,.09)",border:`1px solid ${C.line}`,fontSize:12,color:C.ink2,marginBottom:12}}>{king.last}</div>}
-      {king.insurance?<div style={{...panel,padding:18,borderColor:C.warn,background:"rgba(201,138,75,.08)"}}>
-        <div style={{...label,color:C.warn}}>Five-win insurance</div>
-        <h2 style={{fontFamily:F.display,margin:"7px 0 6px",fontSize:24}}>Run it back. Best of three.</h2>
-        <p style={{fontSize:13,color:C.ink2,lineHeight:1.55,maxWidth:650,margin:"0 0 14px"}}>Beat {king.insurance.name} in a series and the streak survives. Lose it and the crown resets—but your bank never disappears.</p>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <button onClick={()=>launchKing(2,king.insurance,true)} style={btnPrimary}>Use insurance · BO3</button>
-          <button onClick={()=>setKing(k=>({...k,streak:0,insurance:null,challenge:makeKingChallenge(0),last:"Loss accepted. New run, same bank."}))} style={btnGhost}>Accept the loss</button>
-        </div>
-      </div>:<div style={{...panel,padding:18,borderColor:"rgba(201,138,75,.38)"}}>
+      <div style={{...panel,padding:18,borderColor:"rgba(201,138,75,.38)"}}>
         <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
           <span style={{width:48,height:48,borderRadius:14,background:charOf(q.char).color,display:"grid",placeItems:"center",fontFamily:F.display,fontWeight:800,fontSize:20,color:"#111"}}>{charOf(q.char).name[0]}</span>
-          <div style={{flex:"1 1 300px"}}><div style={{...label,color:C.warn}}>Next challenger</div>
+          <div style={{flex:"1 1 300px"}}><div style={{...label,color:C.warn}}>{king.decision?"Rack complete · choose":"Next challenger"}</div>
             <h2 style={{fontFamily:F.display,margin:"4px 0 3px",fontSize:"clamp(22px,4vw,32px)"}}>{q.name}</h2>
-            <div style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>{q.rating} RATING · {tier.label.toUpperCase()} · {TABLES[q.tid].name.toUpperCase()}</div></div>
+            <div style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>{q.rating} RATING · {tier.label.toUpperCase()} · {TABLES[q.tid].name.toUpperCase()} · OPPONENT {king.streak+1}</div></div>
           {q.team&&<span style={{fontFamily:F.mono,fontSize:10,padding:"6px 9px",borderRadius:7,border:`1px solid ${C.warn}`,color:C.warn}}>2 × 2 NIGHT</span>}
+          {king.series&&<span style={{fontFamily:F.display,fontWeight:700,fontSize:22,padding:"7px 11px",borderRadius:9,background:C.panel2,border:`1px solid ${C.line}`}}>{s.us}–{s.them}</span>}
         </div>
         <div style={{margin:"15px 0",height:1,background:C.line}}/>
-        <div style={{display:"grid",gridTemplateColumns:"minmax(180px,260px) 1fr",gap:18,alignItems:"center"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:18,alignItems:"center"}}>
           <TableArt tid={q.tid} cloth={cloth}/>
-          <div><div style={{fontSize:13,color:C.ink2,lineHeight:1.55}}>{q.team?"You get a house partner. Their side gets one too; sides rotate cleanly every shot.":"One rack, heads-up. Take the quick money or stretch it into a series."}</div>
-            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginTop:7}}>Between every rack your Buzz drops by exactly 35%. Your cash bank and streak carry forward.</div>
+          <div><div style={{fontSize:13,color:C.ink2,lineHeight:1.55}}>{q.team?"You get a house partner and their side gets one too. Win the rack, then decide whether this table is settled or deserves a runback.":"Play one rack first. Only after it ends do you bank the result and take the next challenger, or play this person again."}</div>
+            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginTop:7}}>A rematch becomes a race to two: 2–0 ends immediately; 1–1 forces one deciding rack. Buzz falls 35% after every rack. Every conquered opponent raises the next rating by at least 52 until pro speed.</div>
             <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:14}}>
-              <button onClick={()=>launchKing(1)} style={btnPrimary}>Play one rack · up to ${single}</button>
-              <button onClick={()=>launchKing(2)} style={{...btn,borderColor:C.warn,color:"#efc486"}}>Best of three · up to ${series}</button>
+              {!king.decision&&<button onClick={()=>launchKing(false)} style={btnPrimary}>Play rack · win ${rackPay}</button>}
+              {king.decision&&king.decision.racks===1&&<>
+                <button onClick={()=>advanceKing(king.decision.lastWon)} style={btnPrimary}>{king.decision.lastWon?"Bank the win · next challenger":"Accept loss · next challenger"}</button>
+                <button onClick={()=>launchKing(true)} style={{...btn,borderColor:C.warn,color:"#efc486"}}>Play them again · race to 2</button>
+              </>}
+              {king.decision&&deciding&&<button onClick={()=>launchKing(true)} style={{...btnPrimary,background:C.warn}}>Play deciding rack · tied 1–1</button>}
             </div></div>
         </div>
-      </div>}
+      </div>
       <div style={{...panel,padding:"12px 14px",marginTop:12,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
         <span style={{...label,fontSize:9}}>Your player</span>
         <Select id="kingchar" value={seats[0].char} width={150} onPick={v=>upd(0,{char:v})}
@@ -1912,7 +1974,7 @@ function App(){
       [{kind:"human",char:seats[0].char,team:1},{kind:"cpu",char:q.char,rating:q.rating,team:2}];
     return <Game key={kingKey} tid={q.tid} cloth={cloth} count={q.team?4:2} mode="eight" seats={ks}
       opts={{balls:true,specials:true,bar:true}} powerSet={q.powerSet} initialBuzz={king.buzz} initialCash={START_CASH}
-      campaign={{challenger:q.name,rating:q.rating,us:king.series.us,them:king.series.them,target:king.series.target,bank:king.bank}}
+      campaign={{challenger:q.name,rating:q.rating,us:king.series.us,them:king.series.them,target:king.series.target,rematch:king.series.rematch,bank:king.bank}}
       onResult={onKingResult} onSetup={()=>setScreen("king")} onQuit={()=>setScreen("king")}/>;
   }
 
@@ -2031,6 +2093,9 @@ function App(){
               <span style={{fontFamily:F.mono,fontSize:9.5,color:POWER_SETS[powerSet].color}}>{POWER_SETS[powerSet].trigger.toUpperCase()}</span>
             </div>
             <div style={{fontSize:11.5,color:C.ink2,lineHeight:1.5,marginTop:7}}>{POWER_SETS[powerSet].blurb}</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>{Object.entries(POWER_SETS[powerSet].map).map(([n,p])=><span key={n}
+              style={{fontFamily:F.mono,fontSize:8.5,color:BALLS[p].color,padding:"4px 6px",borderRadius:6,border:`1px solid ${BALLS[p].color}55`,background:`${BALLS[p].color}0d`}}>
+              {n} · {BALLS[p].sigil} {BALLS[p].name.toUpperCase()}</span>)}</div>
           </div>}
           {opts.bar&&<div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:8}}>
             Everyone starts on a ${START_CASH} tab. Drinks buy you stats or bend the rules; you can also spend it on
@@ -2509,8 +2574,12 @@ function Game({tid,cloth,count,mode,seats,opts,powerSet,onSetup,onQuit,onResult,
     if(E.flags.noTip){setTip({a:0,b:0});return;}
     setTip({a:+(a*K.maxTip).toFixed(3),b:+(b*K.maxTip).toFixed(3)});};
 
-  const ringFor=b=>{ if(mode!=="cutthroat"||E.flags.blindGroups)return null;
-    const o=own[b.n]; return o<0?null:charOf(seats[o].char).color; };
+  const colorForSide=sd=>{const lead=teams&&teams[sd]&&teams[sd][0];return lead==null?C.accent:charOf(seats[lead].char).color;};
+  const ringFor=b=>{if(E.flags.blindGroups)return null;
+    if(mode==="cutthroat"){const o=own[b.n];return o<0?null:charOf(seats[o].char).color;}
+    if(mode==="eight"&&side&&groupOf(b.n)!=="eight"){
+      const gp=groupOf(b.n),owner=side[0]===gp?0:1;return colorForSide(owner);}
+    return null;};
   const previewV=MAXV*K.speedMul*power*power;
   // DMT used to simulate an entire seven-second table outcome on every render,
   // including unrelated hover/state updates. Memoizing the forecast keeps the
@@ -2550,14 +2619,16 @@ function Game({tid,cloth,count,mode,seats,opts,powerSet,onSetup,onQuit,onResult,
     {campaign&&<div style={{...panel,padding:"9px 12px",marginBottom:10,display:"flex",gap:14,alignItems:"center",flexWrap:"wrap",borderColor:"rgba(201,138,75,.45)"}}>
       <b style={{fontFamily:F.display,color:"#efc486"}}>King of the Table</b>
       <span style={{fontFamily:F.mono,fontSize:10,color:C.ink2}}>{campaign.challenger} · {campaign.rating} RATING</span>
-      <span style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>SERIES {campaign.us}–{campaign.them} · FIRST TO {campaign.target}</span>
+      <span style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>{campaign.rematch?`REMATCH ${campaign.us}–${campaign.them} · FIRST TO 2`:"ONE RACK · REMATCH OFFER COMES AFTER"}</span>
       <span style={{marginLeft:"auto",fontFamily:F.mono,fontSize:10,color:C.good}}>BANK ${campaign.bank} · BUZZ {Math.round(E.buzz)}</span>
     </div>}
 
     <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
-      {seats.slice(0,count).map((s,i)=>{const ch=charOf(s.char),act=i===turn&&over==null,out=!alive(i);
+      {seats.slice(0,count).map((s,i)=>{const ch=charOf(s.char),act=i===turn&&over==null,out=!alive(i),
+        gp=mode==="eight"&&side?side[sideOf(i)]:null,markCol=gp?colorForSide(sideOf(i)):ch.color;
         return(<div key={i} style={{...panel,padding:"9px 12px",display:"flex",alignItems:"center",gap:10,flex:"1 1 168px",
-          opacity:out?.4:1,border:act?`1px solid ${C.accentDim}`:`1px solid ${C.line}`,background:act?C.panel2:C.panel}}>
+          opacity:out?.4:1,border:act?`1px solid ${C.accentDim}`:`1px solid ${C.line}`,background:act?C.panel2:C.panel,
+          boxShadow:gp?`inset 3px 0 ${markCol}`:"none"}}>
           <span style={{width:26,height:26,borderRadius:26,background:ch.color,display:"flex",alignItems:"center",
             justifyContent:"center",fontFamily:F.display,fontWeight:700,fontSize:12,color:"#12140f",flexShrink:0}}>{ch.name[0]}</span>
           <span style={{minWidth:0,flex:1}}>
@@ -2571,18 +2642,28 @@ function Game({tid,cloth,count,mode,seats,opts,powerSet,onSetup,onQuit,onResult,
               <span style={{fontFamily:F.mono,fontSize:8.5,color:(buzz[i]||0)>=85?C.warn:C.muted}}>
                 {bandOf(buzz[i]||0).toUpperCase()}{opts.bar?` · $${money(i)}`:""}</span></span>}
             </span>
+          {gp&&!effOf(i).flags.blindGroups&&<GroupToken group={gp} color={markCol} size={22}/>} 
           {mode!=="cutthroat"&&!effOf(i).flags.blindGroups&&<span style={{fontFamily:F.mono,fontSize:11,color:C.muted}}>{upCount(i)}</span>}
           {sending&&i!==turn&&alive(i)&&<button onClick={()=>sendOne(i,sending)}
             style={{...btn,padding:"6px 9px",fontSize:11,borderColor:C.warn,color:C.warn}}>On me</button>}
         </div>);})}
     </div>
 
+    {(()=>{const hi=seats.slice(0,count).findIndex(s=>s.kind==="human");if(hi<0)return null;
+      if(mode==="cutthroat"){const col=charOf(seats[hi].char).color;return <div style={{display:"flex",alignItems:"center",gap:9,margin:"-3px 0 10px",padding:"8px 11px",borderRadius:9,border:`1px solid ${col}66`,background:`${col}12`}}>
+        <span style={{width:12,height:12,borderRadius:"50%",background:col,boxShadow:`0 0 0 3px ${col}33`}}/><b style={{fontSize:12.5}}>Your table color</b><span style={{fontSize:11,color:C.muted}}>Balls outlined in this color belong to you.</span></div>;}
+      if(mode!=="eight")return null;if(!side)return <div style={{margin:"-3px 0 10px",fontFamily:F.mono,fontSize:9.5,color:C.muted}}>TABLE OPEN · YOUR GROUP AND TABLE COLOR LOCK IN ON THE FIRST LEGAL POT</div>;
+      const sd=sideOf(hi),gp=side[sd],col=colorForSide(sd);return <div style={{display:"flex",alignItems:"center",gap:9,margin:"-3px 0 10px",padding:"8px 11px",borderRadius:9,border:`1px solid ${col}66`,background:`${col}12`}}>
+        <GroupToken group={gp} color={col} size={24}/><b style={{fontSize:13}}>You are {gp==="solid"?"Solids":"Stripes"}</b>
+        <span style={{width:9,height:9,borderRadius:"50%",background:col}}/><span style={{fontSize:11,color:C.muted}}>This color outlines every ball your side owns.</span></div>;})()}
+
     {opts.balls&&POWER_SETS[powerSet]&&<div style={{display:"flex",gap:9,alignItems:"center",flexWrap:"wrap",margin:"-2px 0 10px",padding:"7px 10px",borderRadius:9,
       background:`${POWER_SETS[powerSet].color}12`,border:`1px solid ${POWER_SETS[powerSet].color}55`}}>
       <span style={{fontFamily:F.mono,fontSize:9,color:POWER_SETS[powerSet].color}}>POWER SET</span>
       <b style={{fontSize:12.5}}>{POWER_SETS[powerSet].name}</b>
       <span style={{fontSize:11,color:C.muted}}>{POWER_SETS[powerSet].trigger}</span>
-      <span style={{fontFamily:F.mono,fontSize:8.5,color:C.muted}}>{Object.entries(POWER_SETS[powerSet].map).map(([n,p])=>`${n}:${BALLS[p].name}`).join(" · ")}</span>
+      <span style={{display:"inline-flex",gap:5,flexWrap:"wrap"}}>{Object.entries(POWER_SETS[powerSet].map).map(([n,p])=><span key={n}
+        style={{fontFamily:F.mono,fontSize:8,color:BALLS[p].color,padding:"3px 5px",borderRadius:5,border:`1px solid ${BALLS[p].color}55`}}>{n} {BALLS[p].sigil} {BALLS[p].name}</span>)}</span>
       {powerPulse&&<span style={{marginLeft:"auto",fontFamily:F.mono,fontSize:9.5,color:"#f2cf8b"}}>{powerPulse}</span>}
     </div>}
 
