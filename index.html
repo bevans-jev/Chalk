@@ -1,0 +1,2815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
+<title>Chalk</title>
+<style>html,body{margin:0;padding:0;background:#0a0b0d;min-height:100%;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}</style>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script>
+(function(){function box(){var d=document.getElementById("__errbox");
+  if(!d){d=document.createElement("div");d.id="__errbox";
+    d.style.cssText="position:fixed;left:0;right:0;bottom:0;max-height:45%;overflow:auto;z-index:2147483647;background:#2a0d0d;color:#ffc2c2;font:11px/1.45 ui-monospace,monospace;padding:10px 12px;white-space:pre-wrap";
+    document.body.appendChild(d);}d.style.display="block";return d;}
+ function show(m){try{var d=box();var p=document.createElement("div");p.textContent=m;d.appendChild(p);}catch(_){}}
+ window.addEventListener("error",function(e){show((e.message||"error")+(e.error&&e.error.stack?"\n"+e.error.stack:""));});
+ window.addEventListener("unhandledrejection",function(e){show("promise: "+((e.reason&&(e.reason.stack||e.reason.message))||e.reason));});})();
+</script>
+<script type="text/babel" data-presets="react">
+const {useState,useRef,useEffect,useMemo,useCallback}=React;
+
+/* ============================================================================
+   CHALK — pool, with a roster, a physics engine, and a bar.
+
+   ONE FILE, NO BUILD STEP. React + Babel from a CDN, everything else is here.
+
+   HOW THE PIECES FIT
+     A character has six stats (0-100) plus Tolerance. Drinks and the buzz band
+     rewrite those stats into EFFECTIVE stats. kit() turns effective stats into
+     the numbers the engine runs on — cue speed, aim scatter, tip ceiling, cue
+     elevation, how far ahead you can see. Anything that changes a RULE rather
+     than a number sets a flag in RULE, which both the shot loop and the aim
+     preview read, so what you are shown is always what you get.
+
+   SECTIONS
+     1   CONTENT ....... roster, stats, specials, tables, game types, bots
+     1b  THE BAR ....... buzz bands, drinks you buy yourself, spikes you buy
+                         for somebody else, tolerance maths
+     2   CLOTHS ........ table skins, flat colour only
+     3   TOKENS ........ one palette, one type scale, shared style objects
+     4   TABLE ART ..... cushion geometry, jaws, pockets, balls, cue stick
+     5   PHYSICS ....... sliding/rolling, spin, cushions, throw, prediction
+     6   RULES ......... racking, cutthroat ownership, spotting
+     7   AI ............ ghost-ball shot picker, pocket calling
+     8   SCREENS ....... home, how to play, table, setup
+     9   GAME .......... the match itself: turns, fouls, the bar, the controls
+
+   UNITS
+     Table space is inches. A regulation playfield is 100 x 50 and a ball is
+     2.25 across, so every constant in here is a real measurement you can check
+     against a real table. Speeds are inches/second; 440 is a 25 mph break.
+   ========================================================================== */
+
+// ===== 1. CONTENT ============================================================
+// Six stats, and each one gates a DIFFERENT capability, so a high number in one
+// can never paper over a low number in another. Power gets you there, Stroke
+// hits the line, Touch delivers the speed you asked for, English caps how far
+// off centre you may strike, Curve caps how high you may raise the butt, and Eye
+// decides how much of the shot you get shown before you play it.
+//   POWER   top cue speed
+//   STROKE  how closely the ball leaves on the line you aimed
+//   TOUCH   how closely the speed matches the speed you set
+//   ENGLISH how far off centre the tip may go before it miscues
+//   CURVE   how far the cue may be raised — this is the masse stat
+//   EYE     cushions previewed, and whether you see the object and cue-out lines
+// Nobody is good at everything. Fargo is the strongest overall and still can't
+// bend a ball, which is exactly why Pillars and Gates exist.
+// Stats are 0-100 now. Ten buckets was too coarse once drinks started shoving
+// numbers around; a drink worth 18 points has to land somewhere real. Effective
+// stats can also run past 100 or below 0 — a whiskey-fed Breck at 118 power is a
+// legitimate state, and anything under about 20 is where the game starts
+// refusing to do things for you.
+// TOLERANCE is resistance to CHANGE, in both directions. High tolerance climbs
+// slowly and sobers up slowly: stable, committed, hard to sabotage. Low
+// tolerance spikes off one drink and a single cigarette drags it most of the way
+// back: volatile, tunable shot to shot, and very easy for a rival to ruin.
+const CHARS={
+  fargo:{name:"Fargo",from:"The house legend",color:"#c9a227",
+    pow:70,stroke:94,touch:86,english:78,curve:78,eye:86,tol:68,
+    move:{name:"Every Route",kind:"active",uses:1,tag:"once a rack",
+      text:"Forty years on this table and he remembers every route on it. The next shot leaves with no stroke error whatsoever and you see five cushions ahead. Point it at the pocket and it goes."}},
+  mordecai:{name:"Mordecai",from:"The dirtbag",color:"#6f8fbf",
+    pow:52,stroke:76,touch:58,english:96,curve:88,eye:40,tol:80,
+    move:{name:"Dead Rail",kind:"active",uses:1,tag:"once a rack",
+      text:"He knows which rails on this table are shot. For one shot every cushion goes dead and returns almost nothing, so everything dies where it lands."}},
+  cricket:{name:"Cricket",from:"The mosquito",color:"#a674b0",
+    pow:38,stroke:58,touch:96,english:66,curve:96,eye:40,tol:96,
+    move:{name:"Featherweight",kind:"passive",uses:0,tag:"always on",
+      text:"She hits so softly the spin never wears off. Sidespin decays at a quarter of the normal rate, so english that would be gone by the first rail is still working at the third."}},
+  reyes:{name:"Reyes",from:"Calls every shot in Spanish",color:"#4fa98d",
+    pow:70,stroke:94,touch:66,english:38,curve:28,eye:56,tol:24,
+    move:{name:"La Recta",kind:"passive",uses:0,tag:"always on",
+      text:"Nobody follows a word he says and it does not matter, because he tells you exactly where it is going every time. Any shot within ten degrees of straight leaves with zero stroke error."}},
+  breck:{name:"Breck",from:"The rush chairman",color:"#d07b43",
+    pow:98,stroke:66,touch:46,english:46,curve:28,eye:66,tol:90,
+    move:{name:"Wrecking Ball",kind:"passive",uses:0,tag:"always on",
+      text:"One idea, and it is a good one. His break ignores the power ceiling completely and leaves the tip at thirty miles an hour."}},
+  lathe:{name:"Lathe",from:"Builds the cues",color:"#4ca7b8",
+    pow:58,stroke:86,touch:58,english:86,curve:66,eye:40,tol:50,
+    move:{name:"True Stroke",kind:"passive",uses:0,tag:"always on",
+      text:"He turned that shaft himself and it does not deflect. Side english never pushes his cue ball off the aiming line."}},
+  wren:{name:"Wren",from:"Nobody caught the name",color:"#c87898",
+    pow:58,stroke:76,touch:76,english:46,curve:38,eye:96,tol:36,
+    move:{name:"Perch",kind:"active",uses:2,tag:"twice a rack",
+      text:"Twice a rack the cue ball stops dead where it makes contact, whatever spin was on it. Perfect position from anywhere, if you know where you want to be."}},
+};
+const CHAR_IDS=Object.keys(CHARS);
+const charOf=id=>CHARS[id]||CHARS[CHAR_IDS[0]];   // never blow up on a stale id
+const STATS=[["pow","POWER"],["stroke","STROKE"],["touch","TOUCH"],
+             ["english","ENGLISH"],["curve","CURVE"],["eye","EYE"],["tol","TOLERANCE"]];
+const STAT_KEYS=["pow","stroke","touch","english","curve","eye"];
+// Every stat turned into the number the engine actually uses.
+// A character's PASSIVE is keyed off their move name. This lives apart from
+// kit() because kit works on effective stats (which drinks and buzz rewrite)
+// while a passive belongs to the person and never changes.
+function passiveOf(ch){
+  const m=ch.move.kind==="passive"?ch.move.name:"";
+  return{
+    perfectStraight: m==="La Recta",       // Reyes: near-straight shots leave clean
+    freeBreak:       m==="Wrecking Ball",  // Breck: the break ignores the ceiling
+    noSquirt:        m==="True Stroke",    // Lathe: side english never deflects
+    spinHold:        m==="Featherweight",  // Cricket: sidespin barely decays
+  };
+}
+
+// Effective stats -> the numbers the engine actually runs on.
+function kit(st,flags){
+  const f=flags||{};
+  const cl=(v,lo,hi)=>v<lo?lo:v>hi?hi:v;
+  const eng=cl(st.english,0,130)*(f.miscue?0.6:1);
+  return{
+    speedMul: cl(0.50+0.0062*st.pow,0.40,1.35),   // pow 38 -> 18mph, 70 -> 23mph, 98 -> 28mph
+    aimErr:   Math.max(0,0.0000495*(105-st.stroke))*(f.strokeWreck?2.4:1),
+    speedErr: Math.max(0,0.0011*(102-st.touch)),
+    maxTip:   cl(0.10+0.0040*eng,0.08,0.52),
+    maxElev:  cl(2+0.50*st.curve,0,60),
+    rails:    st.eye>=78?3:st.eye>=48?2:1,
+    objLine:  st.eye>=38, cueLine: st.eye>=68, stopMark: st.eye>=48,
+    minPower: f.noSoft?0.60:0.02,
+  };
+}
+
+const BALLS={
+  none:{name:"Standard",when:"—",short:"no swap",effect:"Play the rack straight."},
+  ghost:{name:"Ghost",when:"in flight",short:"passes through one ball",effect:"Passes clean through the first ball it touches, then behaves normally."},
+  bomb:{name:"Bomb",when:"when pocketed",short:"scatters the pocket",effect:"Pocketing it shoves every ball near that pocket away from it."},
+  anchor:{name:"Anchor",when:"in flight",short:"won't be moved",effect:"Barely budges when a rival hits it. Park it in front of a pocket and it stays."},
+  magnet:{name:"Magnet",when:"in flight",short:"near misses drop",effect:"Rolls slowly past a pocket and the pocket takes it. Yours only."},
+  steal:{name:"Steal",when:"when pocketed",short:"always yours",effect:"Counts for you no matter who sinks it."},
+  brick:{name:"Brick",when:"in flight",short:"hits like two",effect:"Heavy. Moves whatever it strikes far harder than it should."},
+  wild:{name:"Wild",when:"when pocketed",short:"counts as anything",effect:"Counts as whichever group you need when it drops."},
+};
+const BALL_IDS=Object.keys(BALLS);
+const POWER_SETS={
+  haunted:{name:"Haunted Rack",tag:"phase · steal · wild",color:"#a991e8",
+    blurb:"The rack remembers bad shooting. Three dry turns wake the table and the next cue ball phases through its first contact.",
+    trigger:"3 dry turns → séance shot",map:{1:"ghost",4:"anchor",9:"steal",12:"wild"}},
+  powder:{name:"Powder Keg",tag:"bomb · brick · anchor",color:"#e19a55",
+    blurb:"Heavy traffic and one live charge. Pocket the Bomb and everything close to that pocket gets kicked back into play.",
+    trigger:"Bomb pocketed → local blast",map:{3:"brick",6:"anchor",10:"bomb",14:"brick"}},
+  gravity:{name:"Gravity Well",tag:"magnets · anchors",color:"#67c9b2",
+    blurb:"The light balls bend toward a slow pocket; the dark balls barely move. A two-ball pot supercharges every Magnet for the next turn.",
+    trigger:"2+ balls down → magnet surge",map:{2:"magnet",5:"anchor",11:"magnet",13:"wild"}},
+  roulette:{name:"House Roulette",tag:"everything changes",color:"#d36f91",
+    blurb:"Four marked balls draw powers from the full deck. Every fourth shot, every marked ball still up draws again.",
+    trigger:"every 4th shot → full redraw",map:{1:"ghost",5:"bomb",10:"steal",15:"brick"},reroll:true},
+};
+const POWER_SET_IDS=Object.keys(POWER_SETS);
+
+// --- Tables. w/h are playfield inches, measured to the cushion noses. Walls are
+// --- rectangles and every layout is mirrored on both axes. Pockets are listed
+// --- as points ON the cushion line; makePockets() works out corner vs side,
+// --- which way the mouth faces, and how far the throat sits back.
+const CORNERS=(w,h)=>[{x:0,y:0},{x:w,y:0},{x:0,y:h},{x:w,y:h}];
+const SIXP=(w,h)=>[...CORNERS(w,h),{x:w/2,y:0},{x:w/2,y:h}];
+const TABLES={
+  regulation:{name:"Regulation",tag:"9 ft · 100 × 50",blurb:"The standard nine-footer. Six pockets, clean cloth, nothing in your way.",
+    build:()=>({w:100,h:50,walls:[],pockets:SIXP(100,50),racks:1})},
+  pillars:{name:"Pillars",tag:"9 ft · four posts",blurb:"Four posts, one in each quarter of the table. Long shots down the middle are gone.",
+    build:()=>({w:100,h:50,racks:1,pockets:SIXP(100,50),
+      walls:[{x:32,y:13,w:5,h:5},{x:63,y:13,w:5,h:5},{x:32,y:32,w:5,h:5},{x:63,y:32,w:5,h:5}]})},
+  gates:{name:"Gates",tag:"9 ft · two gates",blurb:"Two blocks stand out from the long rails, leaving a lane above and below each one.",
+    build:()=>({w:100,h:50,racks:1,pockets:SIXP(100,50),
+      walls:[{x:30,y:17,w:6,h:16},{x:64,y:17,w:6,h:16}]})},
+  offset:{name:"Offset",tag:"9 ft · no corner pockets",blurb:"Every pocket is moved. Both short rails take one in the middle, the long rails take two at the quarters, and the corners are sealed.",
+    build:()=>({w:100,h:50,walls:[],racks:1,
+      pockets:[{x:25,y:0},{x:75,y:0},{x:25,y:50},{x:75,y:50},{x:0,y:25},{x:100,y:25}]})},
+  grand:{name:"The Grand",tag:"14 ft · double rack",blurb:"Twice the table and two full racks. Thirty balls, eight pockets, both eights last.",
+    build:()=>({w:150,h:64,walls:[],racks:2,
+      pockets:[...CORNERS(150,64),{x:50,y:0},{x:100,y:0},{x:50,y:64},{x:100,y:64}]})},
+  octagon:{name:"The Octagon",tag:"regular octagon · eight pockets",blurb:"A true equal-sided octagon. No stretched long rails—eight identical banks and a pocket at every point.",
+    build:()=>({w:72,h:72,walls:[],racks:1,boundary:[[21.1,0],[50.9,0],[72,21.1],[72,50.9],[50.9,72],[21.1,72],[0,50.9],[0,21.1]],
+      cueSpot:[23,36],rackSpot:[45,36],pockets:[
+        {x:21.1,y:0,cx:20,cy:-1.2},{x:50.9,y:0,cx:52,cy:-1.2},{x:72,y:21.1,cx:73.2,cy:20},{x:72,y:50.9,cx:73.2,cy:52},
+        {x:50.9,y:72,cx:52,cy:73.2},{x:21.1,y:72,cx:20,cy:73.2},{x:0,y:50.9,cx:-1.2,cy:52},{x:0,y:21.1,cx:-1.2,cy:20}]})},
+  crossroads:{name:"Crossroads",tag:"H-table · ten pockets",blurb:"Two full rooms joined by one dangerous lane. The four inside elbows are pockets, so every bank through the bridge has teeth.",
+    build:()=>({w:112,h:72,walls:[],racks:1,boundary:[[0,0],[36,0],[36,25],[76,25],[76,0],[112,0],[112,72],[76,72],[76,47],[36,47],[36,72],[0,72]],
+      cueSpot:[20,36],rackSpot:[86,36],pockets:[
+        {x:0,y:0,cx:-1.1,cy:-1.1},{x:0,y:36,cx:-1.3,cy:36},{x:0,y:72,cx:-1.1,cy:73.1},
+        {x:36,y:25,cx:37.2,cy:23.8},{x:76,y:25,cx:74.8,cy:23.8},{x:76,y:47,cx:74.8,cy:48.2},{x:36,y:47,cx:37.2,cy:48.2},
+        {x:112,y:0,cx:113.1,cy:-1.1},{x:112,y:36,cx:113.3,cy:36},{x:112,y:72,cx:113.1,cy:73.1}]})},
+  keyhole:{name:"The Keyhole",tag:"round room · narrow neck · twelve pockets",blurb:"A faceted round chamber feeds a narrow scoring room. Throat pockets punish lazy routes before the ball ever reaches the far end.",
+    build:()=>({w:114,h:64,walls:[],racks:1,boundary:[[0,22],[10,9],[24,0],[42,0],[56,9],[60,19],[80,19],[80,9],[114,9],[114,55],[80,55],[80,45],[60,45],[56,55],[42,64],[24,64],[10,55],[0,42]],
+      cueSpot:[28,32],rackSpot:[88,32],pockets:[
+        {x:10,y:9,cx:8.8,cy:7.8},{x:24,y:0,cx:22.9,cy:-1.2},{x:42,y:0,cx:43.1,cy:-1.2},{x:56,y:9,cx:57.2,cy:7.8},
+        {x:80,y:19,cx:78.7,cy:17.7},{x:114,y:9,cx:115.2,cy:7.8},{x:114,y:55,cx:115.2,cy:56.2},{x:80,y:45,cx:78.7,cy:46.3},
+        {x:56,y:55,cx:57.2,cy:56.2},{x:42,y:64,cx:43.1,cy:65.2},{x:24,y:64,cx:22.9,cy:65.2},{x:10,y:55,cx:8.8,cy:56.2}]})},
+  bowtie:{name:"The Bowtie",tag:"twin rooms · twelve pockets",blurb:"Two angled tables pinch into one waist. The center pockets can end a cross-room shot before it reaches the other side.",
+    build:()=>({w:112,h:64,walls:[],racks:1,boundary:[[12,0],[44,0],[56,22],[68,0],[100,0],[112,12],[112,52],[100,64],[68,64],[56,42],[44,64],[12,64],[0,52],[0,12]],
+      cueSpot:[22,32],rackSpot:[78,32],pockets:[
+        {x:12,y:0,cx:10.8,cy:-1.2},{x:44,y:0,cx:45.2,cy:-1.2},{x:56,y:22,cx:56,cy:20.5},
+        {x:68,y:0,cx:66.8,cy:-1.2},{x:100,y:0,cx:101.2,cy:-1.2},{x:112,y:32,cx:113.4,cy:32},
+        {x:100,y:64,cx:101.2,cy:65.2},{x:68,y:64,cx:66.8,cy:65.2},{x:56,y:42,cx:56,cy:43.5},
+        {x:44,y:64,cx:45.2,cy:65.2},{x:12,y:64,cx:10.8,cy:65.2},{x:0,y:32,cx:-1.4,cy:32}]})},
+};
+const TABLE_IDS=Object.keys(TABLES);
+
+// Game types. `seats` is which player counts each one accepts; `teams` marks
+// the ones that need a side picker on the setup screen.
+const MODES={
+  eight:{name:"8-Ball",seats:[2,3,4],teams:true,
+    blurb:"Solids or stripes, then the eight — and you have to call the pocket on it. Three players is one against two; four is two on two."},
+  cutthroat:{name:"Cutthroat",seats:[2,3,4],
+    blurb:"Every player owns a group and shoots at everybody else's. Last player with a ball still up wins."},
+  king:{name:"King of the Table",seats:[2,3,4],campaign:true,
+    blurb:"A solo run against an endless line of generated challengers. Build a bank and streak, take richer best-of-three sets, survive 2v2 nights, and protect long runs with five-win insurance."},
+};
+const MODE_IDS=Object.keys(MODES);
+const modesFor=n=>MODE_IDS.filter(m=>MODES[m].seats.includes(n));
+
+// Computer strength, named for the pool rating everybody argues about. This
+// only drives shot SELECTION — execution still runs through the character sheet.
+const BOTS=[
+  {rating:200,label:"Coin Feeder",note:"Aims at the ball. That's the whole plan."},
+  {rating:350,label:"Weekend Leaguer",note:"Makes the easy one, then loses the cue ball."},
+  {rating:450,label:"League Night",note:"Plays position on the next ball only."},
+  {rating:550,label:"Local Shark",note:"Picks the right ball and leaves you nothing."},
+  {rating:650,label:"Road Player",note:"Banks, safeties, and a break that works."},
+  {rating:750,label:"Regional",note:"Runs out from anywhere you leave open."},
+  {rating:850,label:"Pro Speed",note:"You get one mistake all match."},
+];
+
+// ===== 1b. THE BAR ===========================================================
+// A drink is a TRADE, never a buff. Some trade stats. The good ones trade an
+// ability — they add or delete something you can do, which is a bigger deal than
+// any number. Every one of them adds Buzz, and Buzz is the shared cost.
+//   0-25   SOBER    your sheet as printed
+//   25-55  LOOSE    a small bonus everywhere — drinking a little is correct
+//   55-85  LIT      the drink's ability at full strength, and its costs land
+//   85-100 OVER     double vision, shaking hands, miscues
+//   100+   CUT OFF  you don't aim any more; the game plays a wild shot for you
+const BANDS=[[20,"Sober"],[45,"Loose"],[75,"Lit"],[95,"Over"],[999,"Cut off"]];
+const bandOf=b=>BANDS.find(x=>b<x[0])[1];
+const BAND_FX={
+  Loose:{stats:{pow:5,stroke:5,touch:5,english:5,curve:5,eye:5}},
+  Lit:{stats:{stroke:-5,touch:-5}},
+  Over:{stats:{stroke:-16,touch:-18},flags:{doubleVision:1,shaky:1}},
+  "Cut off":{stats:{stroke:-34,touch:-34},flags:{strokeWreck:1,miscue:1,doubleVision:1,shaky:1,cutOff:1}},
+};
+// Three kinds of thing you buy for YOURSELF.
+//   boost   pure stat trades, no ability — the bread and butter
+//   back    restorers: they pull buzz down and charge you a stat for it
+//   effect  the ability ones, which add or delete something you can do
+// Every item carries `fx` — a plain-language line printed on the button — so you
+// can tell what a thing does without buying it to find out.
+const DRINKS={
+  // BOOST — pure stat trades. No abilities, no surprises, cheap.
+  beer:{name:"Beer",role:"boost",cost:4,buzz:12,shots:3,stats:{stroke:10,touch:-6},
+    fx:"steadier hand",note:"The one you drink all night. Steadier hand, slightly worse feel for pace."},
+  whiskey:{name:"Whiskey",role:"boost",cost:9,buzz:26,shots:3,stats:{pow:22,curve:18,stroke:-12},
+    fx:"power + bend",note:"All the power and bend you were missing, and you will spray it around a bit."},
+  redbull:{name:"Red Bull",role:"boost",cost:5,buzz:9,shots:3,stats:{touch:16,eye:14,curve:-12},
+    fx:"pace + vision",note:"Wired and precise. Your wrist locks up and the cue will not come off the table."},
+
+  // BACK OFF — lower Buzz and burn duration off everything already affecting
+  // you, positive or hostile. Their own stat trade keeps recovery from being a
+  // free undo button.
+  cig:{name:"Cigarette",role:"back",cost:2,buzz:-14,shots:2,cleanse:1,stats:{stroke:8,pow:-14},
+    fx:"-1 shot from active effects",note:"Step outside. Buzz falls and every temporary positive or hostile effect on you loses one shot. Your hands settle, but the ball comes back with no legs."},
+  espresso:{name:"Espresso",role:"back",cost:4,buzz:-26,shots:2,cleanse:2,stats:{stroke:12,eye:8,touch:-18},
+    fx:"-2 shots from active effects",note:"A stronger reset. Buzz falls and every temporary positive or hostile effect on you loses two shots. Sharp-eyed, but heavy-handed."},
+  fries:{name:"Fries",role:"back",cost:6,buzz:-38,rack:1,cleanse:999,stats:{eye:-14,touch:6},
+    fx:"clear temporary effects",note:"The hard reset. Buzz falls and temporary positive and hostile effects are cleared. You recover your feel for pace, but stop reading the table."},
+
+  // EFFECTS — the ones that change a rule. Expensive, short, and all upside.
+  vodka:{name:"Vodka",role:"effect",cost:10,buzz:24,shots:3,stats:{english:18,touch:-12},flags:{fastCloth:1},
+    fx:"YOUR BALLS RUN FOREVER",note:"Rolling resistance falls off a cliff for your shots. Reach anything, run the cue three rails, and good luck stopping it."},
+  molly:{name:"Molly",role:"effect",cost:15,buzz:26,shots:2,stats:{touch:-16},flags:{steady:1,seeAll:1},
+    fx:"PERFECT STROKE, FULL VISION",note:"Two shots with no stroke error at all and the complete five-cushion picture. You will not miss the line. You may well miss the speed."},
+  jager:{name:"Jäger",role:"effect",cost:12,buzz:22,rack:1,stats:{pow:8},flags:{tilt:1},
+    fx:"TILTS IT FOR EVERYONE",note:"The table is not level any more, and it stays that way all rack. Yours and theirs."},
+  ket:{name:"Ketamine",role:"effect",cost:17,buzz:28,shots:2,stats:{pow:-24},flags:{khole:1},
+    fx:"EVERY POCKET IS A HOLE",note:"The pockets open up and the jaws stop fighting back. Anything that looks at a pocket drops. You can barely hit the ball, mind."},
+  acid:{name:"Acid",role:"effect",cost:20,buzz:32,shots:2,stats:{eye:16},flags:{phase:1},
+    fx:"THE CUE BALL PHASES",note:"Solidity is a suggestion. Your cue ball passes clean through the first ball in its way — shoot straight through a cluster at whatever is behind it."},
+  dmt:{name:"DMT",role:"effect",cost:24,buzz:34,shots:1,stats:{eye:20},flags:{seeEnd:1},
+    fx:"SEE HOW IT ENDS",note:"One shot where the future has already happened. Every ball is drawn where it will finally come to rest — not the line, the outcome."},
+  echo:{name:"Peyote",role:"effect",cost:22,buzz:34,shots:1,stats:{eye:18},flags:{echo:1},
+    fx:"REWIND THE SHOT",note:"You have been here before. After your next shot the table snaps back to how it stood, anything you pocketed stays down, and you shoot again."},
+};
+// ON THEM. Deliberately short and deliberately not game-ending — one bad turn,
+// not a ruined rack. Buzz they can sober off; the rule-benders last a shot or two.
+const SPIKES={
+  round:{name:"Buy a round",cost:6,buzz:14,shots:2,stats:{touch:-8},
+    fx:"they cannot refuse",note:"You do not get to say no. The point is the buzz, not the drink."},
+  doubles:{name:"Double shot",cost:11,buzz:26,shots:2,stats:{stroke:-10},
+    fx:"straight over the line",note:"No conversation, just the glass. The quickest way to push somebody past 95 — for a turn or two."},
+  jukebox:{name:"Crank the jukebox",cost:9,buzz:0,shots:1,flags:{mirror:1},
+    fx:"THEIR AIMING INVERTS",note:"Too loud to think. For one shot the cloth drags their cue the wrong way."},
+  lights:{name:"Kill the lights",cost:12,buzz:0,shots:1,flags:{noPreview:1},
+    fx:"NO AIM LINE AT ALL",note:"One shot played blind. No path, no ghost ball, nothing but the stick and their nerve."},
+  sour:{name:"Sour the pot",cost:13,buzz:0,shots:2,flags:{feedback:1},
+    fx:"POTTING COSTS THEM ONE",note:"For two shots, every ball they sink spits one of their old ones back onto the foot spot."},
+  dose:{name:"Dose their drink",cost:15,buzz:14,shots:2,flags:{falseLine:1},
+    fx:"THEIR AIM LINE LIES",note:"They get the full picture and every bit of it is a few degrees off the shot they are about to play."},
+  mindswap:{name:"Take their cue",cost:20,buzz:0,shots:1,flags:{mindSwap:1},
+    fx:"THE HOUSE SHOOTS FOR THEM",note:"One shot aimed and played by the house. They do not get to choose a thing."},
+  skim:{name:"Skim their tab",cost:5,buzz:0,shots:1,flags:{skim:1},
+    fx:"TAKE $12 OFF THEM",note:"You settle up while they are not looking. Twelve dollars off their tab and onto yours."},
+};
+const SPIKE_IDS=Object.keys(SPIKES);
+const DRINK_IDS=Object.keys(DRINKS);
+const byRole=r=>DRINK_IDS.filter(k=>DRINKS[k].role===r);
+const START_CASH=60;   // one number — drop it back to 50 if the game plays too rich
+// Tolerance resists movement in BOTH directions, so a high-tolerance player is
+// slow to get lit and slow to come back down.
+const buzzShift=(amount,tol)=>amount*(1.55-tol/150);
+
+// ===== 2. CLOTHS =============================================================
+// Flat colour only. No vignette, no sheen, no fake lighting on the bed — the
+// cloth is one solid tone and the cushions are the same tone a shade darker,
+// which is exactly how a real table reads from above.
+// ===== 3. TOKENS =============================================================
+const C={bg:"#0a0b0d",panel:"#121417",panel2:"#171a1e",line:"#232830",lineHi:"#31383f",
+  ink:"#eceef1",ink2:"#b6bdc5",muted:"#8b939d",accent:"#7fa6c4",accentDim:"#3d5468",
+  wood:"#33251a",woodHi:"#4a3625",good:"#6aa88a",warn:"#c98a4b"};
+// A restrained visual identity for each rule-changing effect. The table uses
+// these same accents as the bar and the active-effect strip, so an effect reads
+// as one piece of game UI instead of three unrelated animations.
+const FX_LOOK={
+  beer:{ink:"#d5c9a2",rgb:"174,157,105",mark:"POISE"},
+  whiskey:{ink:"#e2ad74",rgb:"193,126,64",mark:"DRIVE"},
+  redbull:{ink:"#d9a5a1",rgb:"190,100,94",mark:"WIRE"},
+  cig:{ink:"#9fcab7",rgb:"106,168,138",mark:"TRIM"},
+  espresso:{ink:"#a9d3c0",rgb:"106,168,138",mark:"CUT"},
+  fries:{ink:"#b8d8c9",rgb:"106,168,138",mark:"RESET"},
+  vodka:{ink:"#9fd9f2",rgb:"86,174,214",mark:"FLOW"},
+  molly:{ink:"#e8c2ff",rgb:"190,125,233",mark:"LOCK"},
+  jager:{ink:"#e9b873",rgb:"201,138,75",mark:"TILT"},
+  ket:{ink:"#9de3ca",rgb:"86,190,153",mark:"OPEN"},
+  acid:{ink:"#c9b5ff",rgb:"151,119,232",mark:"PHASE"},
+  dmt:{ink:"#b6ecff",rgb:"99,199,235",mark:"END"},
+  echo:{ink:"#e6d6a8",rgb:"201,180,119",mark:"UNDO"},
+  round:{ink:"#e1b27e",rgb:"201,138,75",mark:"ROUND"},
+  doubles:{ink:"#dc9b72",rgb:"193,106,67",mark:"DOUBLE"},
+  jukebox:{ink:"#e6a86f",rgb:"210,132,70",mark:"FLIP"},
+  lights:{ink:"#a4adba",rgb:"104,115,130",mark:"BLIND"},
+  sour:{ink:"#d6bd6f",rgb:"194,161,66",mark:"RETURN"},
+  dose:{ink:"#de8f9d",rgb:"204,92,112",mark:"FALSE"},
+  mindswap:{ink:"#d497d7",rgb:"181,94,187",mark:"HOUSE"},
+  skim:{ink:"#d7b56f",rgb:"182,143,67",mark:"-$12"},
+};
+const fxLook=id=>FX_LOOK[id]||{ink:C.accent,rgb:"127,166,196",mark:"LIVE"};
+const F={display:"'Archivo',system-ui,sans-serif",body:"'Inter',system-ui,sans-serif",mono:"'IBM Plex Mono',ui-monospace,monospace"};
+const panel={background:C.panel,border:`1px solid ${C.line}`,borderRadius:12};
+const label={fontFamily:F.mono,fontSize:11,letterSpacing:1.5,color:C.muted,textTransform:"uppercase"};
+const btn={fontFamily:F.body,fontSize:13,fontWeight:500,padding:"9px 14px",borderRadius:9,
+  border:`1px solid ${C.line}`,background:C.panel2,color:C.ink,cursor:"pointer"};
+const btnGhost={...btn,background:"transparent",color:C.ink2};
+const PULL_MAX=30;   // inches of draw-back that equals a full-power break
+const btnPrimary={fontFamily:F.display,fontSize:14,fontWeight:600,letterSpacing:.4,padding:"13px 22px",
+  borderRadius:10,border:"none",background:C.accent,color:"#0b1116",cursor:"pointer"};
+const seg={fontFamily:F.body,fontSize:12.5,fontWeight:500,padding:"8px 14px",borderRadius:8,
+  border:`1px solid ${C.line}`,background:"transparent",color:C.muted,cursor:"pointer"};
+const segOn={...seg,background:C.panel2,border:`1px solid ${C.accentDim}`,color:C.ink};
+
+// ===== 4. TABLE ART ==========================================================
+// Real table geometry, drawn flat.
+//   RW  rail width from cushion nose to the outside edge of the frame
+//   CD  cushion depth — how far the rubber stands proud of the rail
+//   M_C / M_S  how far back a cushion is cut from a corner / side pocket
+//   JAW how much wider the throat gets between the nose and the back
+// Cushions are separate segments per rail. Each end that meets a pocket is
+// mitred outward into the throat; each end that meets another cushion (a sealed
+// corner, as on Offset) is mitred at 45° so the two meet flush.
+const RW=6.6, CD=2.2, M_C=2.24, M_S=2.5, JAW=1.5, BR=1.125;
+const FRAME="#1b1e22", FRAME_EDGE="#000000", POCKET="#030405";
+
+function makePockets(g){
+  const on=(v,e)=>Math.abs(v-e)<1e-6;
+  return g.pockets.map(p=>{
+    if(p.cx!=null)return{...p,corner:true,r:p.r||2.85,capt:p.capt||(p.r||2.85)*1.1};
+    const ax=on(p.x,0)||on(p.x,g.w), ay=on(p.y,0)||on(p.y,g.h), corner=ax&&ay;
+    let nx=0,ny=0;
+    if(corner){nx=(p.x<g.w/2?-1:1)*0.7071; ny=(p.y<g.h/2?-1:1)*0.7071;}
+    else if(ay) ny=p.y<g.h/2?-1:1; else nx=p.x<g.w/2?-1:1;
+    const off=corner?0.85:0.7, r=corner?2.9:2.6;
+    return{x:p.x,y:p.y,corner,cx:p.x+nx*off,cy:p.y+ny*off,r,capt:r*(corner?1.12:1.06)};});
+}
+
+// One polygon per cushion segment, in table coordinates.
+function cushions(g){
+  if(g.boundary)return[];
+  const near=(a,b)=>Math.abs(a-b)<1e-6;
+  const rails=[
+    {L:g.w,on:p=>near(p.y,0),   at:p=>p.x, map:(t,d)=>[t,-d]},
+    {L:g.w,on:p=>near(p.y,g.h), at:p=>p.x, map:(t,d)=>[t,g.h+d]},
+    {L:g.h,on:p=>near(p.x,0),   at:p=>p.y, map:(t,d)=>[-d,t]},
+    {L:g.h,on:p=>near(p.x,g.w), at:p=>p.y, map:(t,d)=>[g.w+d,t]},
+  ];
+  const out=[];
+  for(const r of rails){
+    const ts=g.pockets.filter(r.on).map(r.at).sort((a,b)=>a-b);
+    const head=ts.some(t=>near(t,0)), tail=ts.some(t=>near(t,r.L));
+    const mid=ts.filter(t=>!near(t,0)&&!near(t,r.L));
+    const segs=[]; let cur=head?M_C:0, ja=head;
+    for(const t of mid){segs.push({a:cur,b:t-M_S,ja,jb:true}); cur=t+M_S; ja=true;}
+    segs.push({a:cur,b:tail?r.L-M_C:r.L,ja,jb:tail});
+    for(const s of segs){
+      if(s.b-s.a<0.4)continue;
+      const ab=s.ja?s.a-JAW:s.a-CD, bb=s.jb?s.b+JAW:s.b+CD;
+      out.push([r.map(s.a,0),r.map(s.b,0),r.map(bb,CD),r.map(ab,CD)]);}
+  }
+  return out;
+}
+
+const ballInfo=n=>{const num=((n-1)%15)+1;
+  const cols=["#d8a41f","#1e4ba8","#b5322a","#5d3789","#cf6519","#15785a","#792c25","#131417"];
+  return{num,col:cols[(num-1)%8],group:num<8?"solid":num===8?"eight":"stripe"};};
+// Real tournament cloth colours, plus three printed ones. Every cloth gets the
+// same fine worsted weave laid over it at very low contrast — that single layer
+// is the difference between "a coloured rectangle" and "a table".
+const CLOTHS={
+  onyx:{name:"Onyx",kind:"solid",base:"#15171a"},
+  tournament:{name:"Tournament",kind:"solid",base:"#1d6350"},
+  championship:{name:"Championship",kind:"solid",base:"#2a7a4f"},
+  midnight:{name:"Midnight",kind:"solid",base:"#1d3f6b"},
+  electric:{name:"Electric",kind:"solid",base:"#2f6fae"},
+  oxblood:{name:"Oxblood",kind:"solid",base:"#7c2731"},
+  camel:{name:"Camel",kind:"solid",base:"#9a7d55"},
+  slate:{name:"Slate",kind:"solid",base:"#3a424a"},
+  cheetah:{name:"Cheetah",kind:"cheetah",base:"#8a6a3e",ink:"#4a3418"},
+  leopard:{name:"Leopard",kind:"leopard",base:"#8b6a34",mid:"#6f5222",ink:"#3d2c12"},
+  zebra:{name:"Zebra",kind:"zebra",base:"#9d978b",ink:"#3b3833"},
+  thermal:{name:"Thermal",kind:"heat",base:"#080c26"},   // live heat map — see HeatCloth
+};
+const CLOTH_IDS=Object.keys(CLOTHS);
+// Table previews always use one readable cloth — you cannot pick a table you
+// cannot see, and Onyx on a preview card is a black rectangle.
+const PREVIEW_CLOTH="oxblood";
+
+// ---- pattern builders -------------------------------------------------------
+// A real cheetah spot is a solid blob with a slightly ragged edge, not an
+// ellipse. Two overlapping ellipses at different angles break the outline, which
+// is the whole difference between "printed fur" and "polka dots".
+function spot(x,y,r,rot,ink,i){
+  return(<g key={"s"+i} transform={`rotate(${rot} ${x} ${y})`} fill={ink}>
+    <ellipse cx={x} cy={y} rx={r} ry={r*0.83}/>
+    <ellipse cx={x+r*0.30} cy={y-r*0.22} rx={r*0.72} ry={r*0.62} transform={`rotate(${rot*-1.7} ${x} ${y})`}/>
+  </g>);}
+
+// A leopard rosette is a ring of separate petals around a warmer centre — never
+// a dashed circle. Petals vary in length and thickness and the ring is broken.
+function rosette(cx,cy,r,rot,c,i){
+  const petals=[];
+  const gaps=[0.18,0.62];                        // where the ring breaks
+  for(let k=0;k<7;k++){
+    const t=k/7;
+    if(gaps.some(gp=>Math.abs(t-gp)<0.075))continue;
+    const a=t*Math.PI*2+rot;
+    const px=cx+Math.cos(a)*r*0.88, py=cy+Math.sin(a)*r*0.74;
+    const pr=r*(0.27+0.10*Math.sin(k*2.3+i));
+    petals.push(<ellipse key={k} cx={px} cy={py} rx={pr} ry={pr*0.66}
+      transform={`rotate(${a*57.3+90} ${px} ${py})`} fill={c.ink}/>);
+  }
+  return(<g key={"r"+i}>
+    <ellipse cx={cx} cy={cy} rx={r*0.66} ry={r*0.54} fill="#8a5c28" opacity=".55"/>
+    {petals}</g>);}
+
+// Spiral tie-dye is made by folding: colour sweeps round in WEDGES, so the dye
+// changes with angle, not with radius. Drawing it as short arc segments coloured
+// by sector is what gives the pinwheel its wedges and its white resist lines.
+function dyeWedges(cols){
+  const segs=[],TURNS=5.4,STEPS=460,cx=50,cy=29;
+  for(let i=0;i<STEPS;i++){
+    const t0=i/STEPS, t1=(i+1)/STEPS;
+    const a0=t0*Math.PI*2*TURNS, a1=t1*Math.PI*2*TURNS;
+    const r0=2+t0*46, r1=2+t1*46;
+    const wedge=Math.floor((((a0/(Math.PI*2))%1)+1)%1*cols.length*1.5);
+    const resist=Math.abs((((a0/(Math.PI*2))%1)*cols.length*1.5)%1-0.5)>0.44;
+    segs.push({
+      d:`M${(cx+Math.cos(a0)*r0).toFixed(2)} ${(cy+Math.sin(a0)*r0*0.62).toFixed(2)}`+
+        `L${(cx+Math.cos(a1)*r1).toFixed(2)} ${(cy+Math.sin(a1)*r1*0.62).toFixed(2)}`,
+      c:resist?"#fdf7e6":cols[wedge%cols.length],
+      w:9.6+2.2*Math.sin(i*0.21)});
+  }
+  return segs;}
+
+function ClothDefs({id,cl}){const c=CLOTHS[cl]||CLOTHS.onyx;
+  return(<>
+    {(c.kind==="cheetah"||c.kind==="leopard")&&
+      <filter id={"fur"+id} x="-14%" y="-18%" width="128%" height="136%">
+        <feTurbulence type="fractalNoise" baseFrequency=".34 .24" numOctaves="2" seed="13" result="f"/>
+        <feDisplacementMap in="SourceGraphic" in2="f" scale=".78" xChannelSelector="R" yChannelSelector="B"/>
+      </filter>}
+
+    {c.kind==="cheetah"&&<pattern id={"pat"+id} width="11" height="11" patternUnits="userSpaceOnUse">
+      <rect width="11" height="11" fill={c.base}/>
+      {[[2.0,1.7,.62,.48,18],[6.1,3.4,.44,.62,-24],[9.2,1.4,.36,.30,40],
+        [4.0,6.9,.56,.42,-12],[8.3,8.1,.48,.60,30],[1.4,9.0,.40,.34,-38],
+        [10.4,5.6,.30,.40,10],[5.8,10.5,.50,.36,-5]].map(([x,y,rx,ry,r],k)=>
+        <ellipse key={k} cx={x} cy={y} rx={rx} ry={ry} fill={c.ink}
+          transform={`rotate(${r} ${x} ${y})`} opacity={.62+(k%3)*.08}/>)}
+    </pattern>}
+    {c.kind==="leopard"&&<pattern id={"pat"+id} width="14" height="14" patternUnits="userSpaceOnUse">
+      <rect width="14" height="14" fill={c.base}/>
+      {/* a rosette is a pale centre inside a BROKEN ring — arcs, not petals */}
+      {[[3.2,3.0,1.9,14],[9.4,6.4,2.2,-22],[5.8,11.0,1.7,36],[12.4,12.1,1.5,-8],
+        [12.0,2.0,1.4,25]].map(([x,y,r,rot],k)=>(
+        <g key={k} transform={`rotate(${rot} ${x} ${y})`} opacity=".72">
+          <ellipse cx={x} cy={y} rx={r*.58} ry={r*.48} fill={c.mid}/>
+          {[[0,150],[170,120],[300,45]].map(([a0,sweep],q)=>{
+            const rr=r*.86, s0=a0*Math.PI/180, s1=(a0+sweep)*Math.PI/180;
+            const x0=x+Math.cos(s0)*rr, y0=y+Math.sin(s0)*rr*.85;
+            const x1=x+Math.cos(s1)*rr, y1=y+Math.sin(s1)*rr*.85;
+            return <path key={q} d={`M${x0} ${y0} A ${rr} ${rr*.85} 0 ${sweep>180?1:0} 1 ${x1} ${y1}`}
+              fill="none" stroke={c.ink} strokeWidth={r*.30} strokeLinecap="round"/>;})}
+        </g>))}
+    </pattern>}
+    {c.kind==="zebra"&&<pattern id={"pat"+id} width="34" height="26" patternUnits="userSpaceOnUse">
+      <rect width="34" height="26" fill={c.base}/>
+      {[[6,1.5,.75,1.9],[19,2.0,1.15,1.1],[29,1.3,1.7,.8]].map(([cx,w1,w2,w3],k)=>
+        <path key={k} fill={c.ink} opacity=".8" d={`M${cx-w1} 0 C${cx+3-w2} 9, ${cx-3.4-w2} 17, ${cx+1.4-w3} 26
+          L${cx+1.4+w3} 26 C${cx-3.4+w2} 17, ${cx+3+w2} 9, ${cx+w1} 0 Z`}/>)}
+      {[[12.5,.36,.2],[24.5,.28,.44]].map(([cx,w1,w3],k)=>
+        <path key={"f"+k} fill={c.ink} opacity=".55"
+          d={`M${cx-w1} 0 C${cx+2.2} 9, ${cx-2.7} 17, ${cx+1-w3} 26
+             L${cx+1+w3} 26 C${cx-2.2} 17, ${cx+2.9} 9, ${cx+w1} 0 Z`}/>)}
+    </pattern>}
+    {c.kind==="dye"&&<radialGradient id={"pat"+id} cx="38%" cy="34%" r="86%">
+      {c.cols.map((col,k)=><stop key={k} offset={`${(k/(c.cols.length-1)*100).toFixed(0)}%`} stopColor={col}/>)}
+    </radialGradient>}
+    {/* the weave. every cloth gets it, at a contrast you feel rather than see */}
+    <pattern id={"weave"+id} width="1.1" height="1.1" patternUnits="userSpaceOnUse">
+      <rect width="1.1" height="1.1" fill="none"/>
+      <path d="M0 0 H1.1" stroke="#fff" strokeWidth=".28" opacity=".045"/>
+      <path d="M0 .55 H1.1" stroke="#000" strokeWidth=".28" opacity=".07"/>
+      <path d="M.55 0 V1.1" stroke="#000" strokeWidth=".22" opacity=".045"/>
+    </pattern>
+  </>);}
+
+// The heat field. White sources only — the filter does every bit of the colour.
+function HeatCloth({id,g,balls}){
+  const trails=useRef([]), last=useRef(new Map());
+  const [,fade]=useState(0);
+  const now=typeof performance!=="undefined"?performance.now():0;
+  const live=(balls||[]).filter(b=>!b.in);
+  if(balls&&live.length){
+    for(const b of live){
+      const q=last.current.get(b.n), sp=Math.hypot(b.vx||0,b.vy||0);
+      if(q){const d=Math.hypot(b.x-q.x,b.y-q.y);
+        if(d>0.16)trails.current.push({x1:q.x,y1:q.y,x2:b.x,y2:b.y,t:now,p:Math.min(1,0.22+sp/210)});}
+      last.current.set(b.n,{x:b.x,y:b.y});}
+    const up=new Set(live.map(b=>b.n));
+    for(const n of last.current.keys())if(!up.has(n))last.current.delete(n);
+    trails.current=trails.current.filter(t=>now-t.t<1600).slice(-150);}
+  useEffect(()=>{ if(!balls)return; let raf=0;
+    const tick=()=>{const t=performance.now();
+      trails.current=trails.current.filter(q=>t-q.t<1600);
+      fade(v=>v+1); raf=requestAnimationFrame(tick);};
+    raf=requestAnimationFrame(tick); return()=>cancelAnimationFrame(raf);},[balls]);
+  const spots=live.length?live:[{n:"a",x:g.w*.27,y:g.h*.36},{n:"b",x:g.w*.51,y:g.h*.56},
+    {n:"c",x:g.w*.57,y:g.h*.5},{n:"d",x:g.w*.76,y:g.h*.3}];
+  // crowding drives the reading: a ball with neighbours burns hotter and wider
+  const heat=b=>spots.reduce((s2,q)=>q===b?s2:s2+Math.max(0,1-Math.hypot(q.x-b.x,q.y-b.y)/8.5),0);
+  const links=[];for(let i=0;i<spots.length;i++)for(let j=i+1;j<spots.length;j++){
+    const d=Math.hypot(spots[i].x-spots[j].x,spots[i].y-spots[j].y);if(d<12.5)links.push({a:spots[i],b:spots[j],d});}
+  return(<g clipPath={`url(#bed${id})`} pointerEvents="none" shapeRendering="geometricPrecision" style={{mixBlendMode:"screen"}}>
+    {/* cold field first, so the empty cloth is not simply black */}
+    {spots.map(b=><ellipse key={"cold"+b.n} cx={b.x} cy={b.y} rx="11" ry="9"
+      fill={`url(#heatCold${id})`} filter={`url(#heatSoft${id})`}/>)}
+    {/* Close balls share one continuous thermal body instead of showing a row
+        of separate circular pixels. The bridge fades before the spots separate. */}
+    {links.map((q,i)=><line key={"bridge"+i} x1={q.a.x} y1={q.a.y} x2={q.b.x} y2={q.b.y}
+      stroke="#e84b37" strokeWidth={Math.max(1.2,7.2-q.d*.42)} strokeLinecap="round"
+      opacity={Math.max(.08,.5-q.d*.032)} filter={`url(#heatBridge${id})`}/>)}
+    {/* where balls have been */}
+    {trails.current.map((t,i)=>{const age=Math.min(1,(now-t.t)/1600);
+      return <line key={i} x1={t.x1} y1={t.y1} x2={t.x2} y2={t.y2}
+        stroke={age>0.55?"#7d1f86":age>0.3?"#c8264f":"#ff7a1e"}
+        strokeWidth={(0.8+2.0*t.p)*(1-age*0.55)} strokeLinecap="round"
+        opacity={(1-age)*(0.3+0.4*t.p)} filter={`url(#heatBlur${id})`}/>;})}
+    {/* and the balls themselves, hotter where they are packed together */}
+    {spots.map(b=>{const c2=heat(b), r=4.25+Math.min(3.6,c2*1.55);
+      return(<g key={b.n}>
+        <ellipse cx={b.x} cy={b.y} rx={r*1.62} ry={r*1.48} fill={`url(#heatSpot${id})`}
+          opacity={0.34+Math.min(0.28,c2*0.09)} filter={`url(#heatSoft${id})`}/>
+        <ellipse cx={b.x} cy={b.y} rx={r} ry={r*.96} fill={`url(#heatSpot${id})`}
+          opacity={Math.min(1,0.84+c2*0.07)} filter={`url(#heatFeather${id})`}/>
+        <ellipse cx={b.x} cy={b.y} rx={r*.52} ry={r*.49} fill={`url(#heatSpot${id})`}
+          opacity={Math.min(1,.72+c2*.08)}/></g>);})}
+  </g>);}
+
+function Ball({b,id,ring}){const {num,col,group}=ballInfo(b.n);
+  const cue=b.n===0, r=BR;
+  // The pole, projected. Its tilt decides where the numbered cap sits and how
+  // wide the stripe reads — pole facing up gives you a white cap ringed with
+  // colour, pole lying flat gives you the classic band across the middle.
+  const px=b.px||0, py=b.py||0, pz=b.pz==null?1:b.pz;
+  const pl=Math.hypot(px,py);
+  const ang=Math.atan2(py,px)*180/Math.PI;
+  const capOn=Math.abs(pz)>0.42;
+  const capX=px*r*0.58, capY=py*r*0.58, capR=r*0.40;
+  const numOn=Math.abs(pz)>0.62;
+  const nAng=Math.atan2(b.qy||0,b.qx||1)*180/Math.PI;
+  const band=Math.min(r,r*0.60/Math.max(0.30,pl));
+  return(<g transform={`translate(${b.x} ${b.y})`}>
+    <ellipse cx=".18" cy=".26" rx={r*.95} ry={r*.9} fill="#000" opacity=".3" filter={`url(#soft${id})`}/>
+    <circle r={r} fill={cue||group==="stripe"?"#f4f2ec":col}/>
+    {group==="stripe"&&!cue&&<rect x={-band} y={-r} width={band*2} height={r*2} fill={col}
+      transform={`rotate(${ang})`} clipPath={`url(#bclip${id})`}/>}
+    {capOn&&!cue&&<g transform={`rotate(${ang} ${capX} ${capY})`}>
+      <ellipse cx={capX} cy={capY} rx={capR*Math.max(0.5,Math.abs(pz))} ry={capR} fill="#faf8f3"
+        clipPath={`url(#bclip${id})`}/></g>}
+    {capOn&&cue&&<ellipse cx={capX} cy={capY} rx={capR*0.34*Math.abs(pz)} ry={capR*0.34}
+      fill="#c0402f" opacity=".8" transform={`rotate(${ang} ${capX} ${capY})`}/>}
+    {numOn&&!cue&&<text x={capX} y={capY+r*.145} textAnchor="middle" fontFamily={F.body}
+      fontWeight="700" fontSize={r*.5} fill="#17191c" opacity={Math.min(1,(Math.abs(pz)-0.62)*4)}
+      transform={`rotate(${nAng} ${capX} ${capY})`}>{num}</text>}
+    <circle r={r} fill={`url(#sph${id})`}/>
+    <circle cx={-r*.33} cy={-r*.35} r={r*.2} fill="#fff" opacity=".42"/>
+    {ring&&<circle r={r+.24} fill="none" stroke={ring} strokeWidth=".34"/>}
+    {b.power&&<g pointerEvents="none">
+      <circle r={r+0.42} fill="none" stroke={(BALLS[b.power]||BALLS.none).color||"#f0cf7c"} strokeWidth=".24" strokeOpacity=".92"/>
+      <circle cx={r*.67} cy={-r*.67} r=".42" fill="#0b0d10" stroke="#f0cf7c" strokeWidth=".12"/>
+      <text x={r*.67} y={-r*.67+.18} textAnchor="middle" fontFamily={F.mono} fontSize=".48" fontWeight="700" fill="#f6df9a">
+        {{ghost:"G",bomb:"!",anchor:"A",magnet:"M",steal:"S",brick:"B",wild:"W"}[b.power]||"P"}</text>
+    </g>}
+  </g>);}
+
+// Butt cap, linen wrap, forearm, silver joint collar, maple shaft, ivory
+// ferrule, blue tip — built as a chain of tapered quads down one axis.
+function CueStick({x,y,angle,pull,id,tip,live}){
+  const back=BR+1.4+pull*26, L=58;
+  const dx=Math.cos(angle),dy=Math.sin(angle),nx=-dy,ny=dx;
+  const off=(tip?tip.a:0)*BR*0.62;
+  const px=x-dx*back+nx*off, py=y-dy*back+ny*off;
+  const pt=(d,o)=>[px-dx*d+nx*o,py-dy*d+ny*o];
+  // half-width grows from the tip back to the butt
+  const hw=d=>0.30+0.26*(d/L);
+  const quad=(d0,d1)=>[pt(d0,hw(d0)),pt(d1,hw(d1)),pt(d1,-hw(d1)),pt(d0,-hw(d0))]
+    .map(q=>q.join(",")).join(" ");
+  const part=(d0,d1,fill,extra)=><polygon points={quad(d0,d1)} fill={fill} {...(extra||{})}/>;
+  return(<g opacity={live?1:.94}>
+    {live&&<polygon points={quad(-1.2,L)} fill={C.accent} opacity=".14"
+      transform={`translate(${nx*0} ${ny*0})`}/>}
+    {part(0,0.9,"#4f86a8")}          {/* tip */}
+    {part(0.9,2.4,"#efe9dc")}        {/* ferrule */}
+    {part(2.4,24,`url(#shaft${id})`)}{/* maple shaft */}
+    {part(24,25.4,"#cfd3d8")}        {/* joint collar */}
+    {part(25.4,38,`url(#fore${id})`)}{/* forearm */}
+    {part(38,50,"#15161a")}          {/* linen wrap */}
+    {part(50,L,`url(#fore${id})`)}   {/* butt sleeve */}
+    {part(L-1.1,L,"#cfd3d8")}        {/* butt cap */}
+    <polygon points={[pt(2.4,hw(2.4)*0.55),pt(L,hw(L)*0.55),pt(L,hw(L)*0.05),pt(2.4,hw(2.4)*0.05)]
+      .map(q=>q.join(",")).join(" ")} fill="#fff" opacity=".16"/>
+    <polygon points={[pt(2.4,-hw(2.4)*0.35),pt(L,-hw(L)*0.35),pt(L,-hw(L)),pt(2.4,-hw(2.4))]
+      .map(q=>q.join(",")).join(" ")} fill="#000" opacity=".26"/>
+  </g>);}
+
+let UID=0;
+function TableArt({tid,cloth,balls,aim,onPoint,ringFor,calls,called,blank,tfx,style}){
+  const g=useMemo(()=>TABLES[tid].build(),[tid]);
+  const id=useMemo(()=>++UID,[]);
+  const cl=CLOTHS[cloth]||CLOTHS.onyx;
+  const fill=cl.kind==="solid"?cl.base:cl.kind==="heat"?`url(#heatBase${id})`:`url(#pat${id})`;
+  const pk=useMemo(()=>makePockets(g),[g]);
+  const cush=useMemo(()=>cushions(g),[g]);
+  const boundary=g.boundary&&g.boundary.map(q=>q.join(",")).join(" ");
+  const vb=[-RW,-RW,g.w+RW*2,g.h+RW*2];
+  const T=tfx||{};   // which rule-bending effects are live on this shot
+  const live=cl.kind==="heat";
+  const svgRef=useRef(null);
+  const toTable=e=>{const s=svgRef.current;if(!s)return null;const r=s.getBoundingClientRect();
+    const t=e.touches&&e.touches[0]?e.touches[0]:e;
+    return{x:vb[0]+(t.clientX-r.left)/r.width*vb[2], y:vb[1]+(t.clientY-r.top)/r.height*vb[3]};};
+  // Sight diamonds sit on the rail top, skipped wherever a pocket is close.
+  const sights=[];
+  const addS=(L,map)=>{for(let i=1;i<=7;i++){const t=L*i/8;
+    if(g.pockets.some(p=>Math.abs((map===0||map===1?p.x:p.y)-t)<5&&
+      (map===0?p.y===0:map===1?p.y===g.h:map===2?p.x===0:p.x===g.w)))continue;
+    const q=map===0?[t,-(CD+RW)/2]:map===1?[t,g.h+(CD+RW)/2]:map===2?[-(CD+RW)/2,t]:[g.w+(CD+RW)/2,t];
+    sights.push({x:q[0],y:q[1],a:45});}};
+  if(!g.boundary){addS(g.w,0);addS(g.w,1);addS(g.h,2);addS(g.h,3);}
+  else g.boundary.forEach((a,i)=>{const b=g.boundary[(i+1)%g.boundary.length],dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy),n=Math.max(1,Math.floor(L/28));
+    for(let k=1;k<=n;k++){const t=k/(n+1),x=a[0]+dx*t,y=a[1]+dy*t;if(g.pockets.some(p=>Math.hypot(p.x-x,p.y-y)<6))continue;
+      sights.push({x:x+dy/L*(CD+RW)/2,y:y-dx/L*(CD+RW)/2,a:Math.atan2(dy,dx)*180/Math.PI+45});}});
+
+  return(<svg ref={svgRef} viewBox={vb.join(" ")} style={{width:"100%",display:"block",touchAction:"none",...style}}
+    onPointerDown={onPoint?e=>{e.currentTarget.setPointerCapture(e.pointerId);onPoint("down",toTable(e));}:undefined}
+    onPointerMove={onPoint?e=>onPoint("move",toTable(e)):undefined}
+    onPointerUp={onPoint?e=>onPoint("up",toTable(e)):undefined}>
+    <defs><ClothDefs id={id} cl={cloth}/>
+      <radialGradient id={"sph"+id} cx="35%" cy="31%" r="76%">
+        <stop offset="0%" stopColor="#fff" stopOpacity=".24"/><stop offset="52%" stopColor="#fff" stopOpacity="0"/>
+        <stop offset="100%" stopColor="#000" stopOpacity=".34"/></radialGradient>
+      <linearGradient id={"shaft"+id} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#e3c491"/><stop offset="45%" stopColor="#c9a068"/><stop offset="100%" stopColor="#8e6a3c"/></linearGradient>
+      <linearGradient id={"fore"+id} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#7a3f2a"/><stop offset="45%" stopColor="#5a2b1c"/><stop offset="100%" stopColor="#2e150d"/></linearGradient>
+      <filter id={"soft"+id} x="-70%" y="-70%" width="240%" height="240%"><feGaussianBlur stdDeviation=".5"/></filter>
+      <clipPath id={"bclip"+id}><circle cx="0" cy="0" r={BR}/></clipPath>
+      <linearGradient id={"rail"+id} x1="0" y1="0" x2="0.15" y2="1">
+        <stop offset="0%" stopColor="#262b31"/><stop offset="42%" stopColor="#1b1f24"/>
+        <stop offset="100%" stopColor="#111418"/></linearGradient>
+      <radialGradient id={"pkt"+id} cx="50%" cy="46%" r="58%">
+        <stop offset="0%" stopColor="#000000"/><stop offset="62%" stopColor="#020304"/>
+        <stop offset="100%" stopColor="#070a0d"/></radialGradient>
+      <clipPath id={"bed"+id}>{boundary?<polygon points={boundary}/>:<rect x="0" y="0" width={g.w} height={g.h}/>}</clipPath>
+      {/* The thermal palette. heatSpot is a ball: white core through yellow,
+          orange and red into violet. heatCold is the cool wash around it, so
+          empty cloth reads as cold rather than black. */}
+      <radialGradient id={"heatSpot"+id} colorInterpolation="sRGB">
+        <stop offset="0%"   stopColor="#ffffff" stopOpacity="1"/>
+        <stop offset="10%"  stopColor="#fffbd6" stopOpacity=".98"/>
+        <stop offset="22%"  stopColor="#ffe176" stopOpacity=".94"/>
+        <stop offset="36%"  stopColor="#ffb52d" stopOpacity=".88"/>
+        <stop offset="50%"  stopColor="#f77a24" stopOpacity=".79"/>
+        <stop offset="64%"  stopColor="#e63d3d" stopOpacity=".67"/>
+        <stop offset="77%"  stopColor="#b72e69" stopOpacity=".49"/>
+        <stop offset="89%"  stopColor="#6f278a" stopOpacity=".25"/>
+        <stop offset="100%" stopColor="#2a1f6b" stopOpacity="0"/>
+      </radialGradient>
+      <radialGradient id={"heatCold"+id}>
+        <stop offset="0%"   stopColor="#3b3fa0" stopOpacity=".62"/>
+        <stop offset="55%"  stopColor="#26307e" stopOpacity=".34"/>
+        <stop offset="100%" stopColor="#111a52" stopOpacity="0"/>
+      </radialGradient>
+      <filter id={"heatSoft"+id} x="-75%" y="-75%" width="250%" height="250%" colorInterpolationFilters="sRGB">
+        <feGaussianBlur stdDeviation="3.15"/></filter>
+      <filter id={"heatBlur"+id} x="-40%" y="-40%" width="180%" height="180%">
+        <feGaussianBlur stdDeviation=".82"/></filter>
+      <filter id={"heatFeather"+id} x="-35%" y="-35%" width="170%" height="170%" colorInterpolationFilters="sRGB">
+        <feGaussianBlur stdDeviation=".42"/></filter>
+      <filter id={"heatBridge"+id} x="-55%" y="-150%" width="210%" height="400%" colorInterpolationFilters="sRGB">
+        <feGaussianBlur stdDeviation="1.7"/></filter>
+      {/* A real melt: fractal noise displacing the cloth, with the noise scale
+          itself crawling. This is why acid looks like the table is liquid. */}
+      <filter id={"melt"+id} x="-8%" y="-8%" width="116%" height="116%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="2" seed="7" result="n">
+          <animate attributeName="baseFrequency" values="0.010;0.015;0.011;0.010"
+            dur="14s" repeatCount="indefinite"/></feTurbulence>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="1.45" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+      {/* Iridescent marbling: fractal noise pushed through a colour matrix that
+          rotates the channels into each other, then softened. This is oil on
+          water, not a pattern — no two frames are the same shape. */}
+      <filter id={"oil"+id} x="0" y="0" width="100%" height="100%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.013" numOctaves="4" seed="11" result="t">
+          <animate attributeName="baseFrequency" values="0.009;0.018;0.011;0.009"
+            dur="17s" repeatCount="indefinite"/></feTurbulence>
+        <feColorMatrix in="t" type="matrix"
+          values="1.9 -0.9 0.2 0 0   0.1 1.8 -0.9 0 0   -0.9 0.2 1.9 0 0   0 0 0 0 1"/>
+        <feGaussianBlur stdDeviation="0.55"/>
+      </filter>
+      <filter id={"soften"+id} x="-40%" y="-40%" width="180%" height="180%">
+        <feGaussianBlur stdDeviation="2.1"/></filter>
+      <filter id={"glow"+id} x="-60%" y="-60%" width="220%" height="220%">
+        <feGaussianBlur stdDeviation="1.15"/></filter>
+      <radialGradient id={"well"+id}>
+        <stop offset="0%" stopColor="#8ff0c8" stopOpacity=".85"/>
+        <stop offset="45%" stopColor="#6ad0b0" stopOpacity=".30"/>
+        <stop offset="100%" stopColor="#6ad0b0" stopOpacity="0"/>
+      </radialGradient>
+      <linearGradient id={"ketFade"+id} x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stopColor="#66d9b7" stopOpacity="0"/>
+        <stop offset="34%" stopColor="#8ee9c9" stopOpacity=".52"/>
+        <stop offset="62%" stopColor="#d2fff0" stopOpacity=".82"/>
+        <stop offset="100%" stopColor="#66d9b7" stopOpacity="0"/>
+      </linearGradient>
+      <linearGradient id={"streak"+id} x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stopColor={C.accent} stopOpacity="0"/>
+        <stop offset="45%" stopColor="#bfe6ff" stopOpacity=".9"/>
+        <stop offset="100%" stopColor={C.accent} stopOpacity="0"/>
+      </linearGradient>
+      <linearGradient id={"vodkaWash"+id} x1="0" y1="0" x2="1" y2=".2">
+        <stop offset="0%" stopColor="#5cc9f2" stopOpacity="0"/>
+        <stop offset="28%" stopColor="#b8efff" stopOpacity=".08"/>
+        <stop offset="48%" stopColor="#e8fbff" stopOpacity=".30"/>
+        <stop offset="68%" stopColor="#78d9f5" stopOpacity=".08"/>
+        <stop offset="100%" stopColor="#5cc9f2" stopOpacity="0"/>
+        <animate attributeName="x1" values="-1;1" dur="4.8s" repeatCount="indefinite"/>
+        <animate attributeName="x2" values="0;2" dur="4.8s" repeatCount="indefinite"/>
+      </linearGradient>
+      <radialGradient id={"mollyWash"+id} cx="50%" cy="50%" r="70%">
+        <stop offset="0%" stopColor="#ff7bd5" stopOpacity=".24"/>
+        <stop offset="38%" stopColor="#a56cff" stopOpacity=".12"/>
+        <stop offset="72%" stopColor="#62e0e8" stopOpacity=".08"/>
+        <stop offset="100%" stopColor="#ffcf70" stopOpacity="0"/>
+      </radialGradient>
+      <radialGradient id={"dmtCore"+id} cx="50%" cy="50%" r="58%">
+        <stop offset="0%" stopColor="#d7fbff" stopOpacity=".28"/>
+        <stop offset="38%" stopColor="#70d8ee" stopOpacity=".14"/>
+        <stop offset="70%" stopColor="#a975ed" stopOpacity=".08"/>
+        <stop offset="100%" stopColor="#342460" stopOpacity="0"/>
+      </radialGradient>
+      <linearGradient id={"peyoteWash"+id} x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stopColor="#e6c477" stopOpacity=".14"/>
+        <stop offset="45%" stopColor="#9ed7c2" stopOpacity=".06"/>
+        <stop offset="72%" stopColor="#c59bd5" stopOpacity=".10"/>
+        <stop offset="100%" stopColor="#e6c477" stopOpacity=".04"/>
+      </linearGradient>
+      <linearGradient id={"peyoteSpiral"+id} x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stopColor="#f2d58b" stopOpacity=".18"/>
+        <stop offset="34%" stopColor="#d09b56" stopOpacity=".78"/>
+        <stop offset="66%" stopColor="#7bc6aa" stopOpacity=".72"/>
+        <stop offset="100%" stopColor="#b787c8" stopOpacity=".12"/>
+      </linearGradient>
+      <linearGradient id={"aur"+id} x1="0" y1="0" x2="1" y2="0.3">
+        <stop offset="0%" stopColor="#ff6ec7" stopOpacity="0"/>
+        <stop offset="30%" stopColor="#8f7bff" stopOpacity=".75"/>
+        <stop offset="62%" stopColor="#4fd6e0" stopOpacity=".75"/>
+        <stop offset="100%" stopColor="#ffd36e" stopOpacity="0"/>
+      </linearGradient>
+      <radialGradient id={"focusRing"+id}>
+        <stop offset="0%" stopColor="#f2dcff" stopOpacity="0"/>
+        <stop offset="70%" stopColor="#d6a7f5" stopOpacity=".08"/>
+        <stop offset="92%" stopColor="#e9c7ff" stopOpacity=".34"/>
+        <stop offset="100%" stopColor="#e9c7ff" stopOpacity="0"/>
+      </radialGradient>
+      <radialGradient id={"echoRing"+id}>
+        <stop offset="0%" stopColor="#eadfb8" stopOpacity=".10"/>
+        <stop offset="72%" stopColor="#d3be79" stopOpacity=".03"/>
+        <stop offset="100%" stopColor="#d3be79" stopOpacity="0"/>
+      </radialGradient>
+      <filter id={"ripple"+id} x="-6%" y="-6%" width="112%" height="112%">
+        <feTurbulence type="turbulence" baseFrequency="0.05 0.012" numOctaves="2" seed="3" result="n">
+          <animate attributeName="baseFrequency" values="0.05 0.012;0.02 0.05;0.05 0.012"
+            dur="7s" repeatCount="indefinite"/></feTurbulence>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="2.6" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+      <linearGradient id={"rain"+id} x1="0" y1="0" x2="1" y2="0.4">
+        <stop offset="0%" stopColor="#ff5f6d"/><stop offset="20%" stopColor="#ffc371"/>
+        <stop offset="40%" stopColor="#7ee8a2"/><stop offset="60%" stopColor="#5ac8fa"/>
+        <stop offset="80%" stopColor="#b06ff5"/><stop offset="100%" stopColor="#ff5f6d"/>
+        <animate attributeName="x1" values="0;-1;0" dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="x2" values="1;0;1" dur="6s" repeatCount="indefinite"/>
+      </linearGradient>
+      <linearGradient id={"tiltD"+id} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor="#000" stopOpacity=".26"/><stop offset="100%" stopColor={C.warn} stopOpacity=".18"/></linearGradient>
+      <linearGradient id={"tiltU"+id} x1="0" y1="1" x2="0" y2="0">
+        <stop offset="0%" stopColor="#000" stopOpacity=".26"/><stop offset="100%" stopColor={C.warn} stopOpacity=".18"/></linearGradient>
+    </defs>
+
+    {/* frame */}
+    {boundary?<>
+      <polygon points={boundary} fill={`url(#rail${id})`} stroke="#020304" strokeWidth={RW*2+1.4} strokeLinejoin="round"/>
+      <polygon points={boundary} fill={`url(#rail${id})`} stroke={`url(#rail${id})`} strokeWidth={RW*2} strokeLinejoin="round"/>
+      <polygon points={boundary} fill="none" stroke="#fff" strokeOpacity=".055" strokeWidth={RW*2-.8} strokeLinejoin="round"/>
+      <polygon points={boundary} fill="none" stroke={FRAME_EDGE} strokeOpacity=".72" strokeWidth=".58" strokeLinejoin="round"/>
+    </>:<>
+      <rect x={vb[0]} y={vb[1]} width={vb[2]} height={vb[3]} rx="2.5" fill={`url(#rail${id})`}/>
+      <rect x={vb[0]+.45} y={vb[1]+.45} width={vb[2]-.9} height={vb[3]-.9} rx="2.1" fill="none" stroke="#fff" strokeOpacity=".055" strokeWidth=".5"/>
+      <rect x={vb[0]+.2} y={vb[1]+.2} width={vb[2]-.4} height={vb[3]-.4} rx="2.3" fill="none" stroke={FRAME_EDGE} strokeOpacity=".85" strokeWidth=".55"/>
+      <rect x={-CD-.55} y={-CD-.55} width={g.w+(CD+.55)*2} height={g.h+(CD+.55)*2} rx="1.4" fill="none" stroke="#000" strokeOpacity=".5" strokeWidth=".5"/>
+    </>}
+    {sights.map((s,i)=><rect key={i} x={s.x-.6} y={s.y-.6} width="1.2" height="1.2"
+      transform={`rotate(${s.a} ${s.x} ${s.y})`} fill="#cfc6b2" opacity=".3"/>)}
+
+    {/* bed */}
+    {/* Acid distorts the cloth itself. Ketamine leaves the bed alone and marks
+        only the pockets, keeping the shot readable. */}
+    <g filter={T.melt?`url(#melt${id})`:undefined} clipPath={`url(#bed${id})`}>
+      {boundary?<polygon points={boundary} fill={fill}/>:<rect x="0" y="0" width={g.w} height={g.h} fill={fill}/>} 
+      {cl.kind==="heat"&&<HeatCloth id={id} g={g} balls={balls}/>}
+    </g>
+    <g clipPath={`url(#bed${id})`}>
+    {T.melt&&<g style={{pointerEvents:"none"}}>
+      {/* Acid is chromatic refraction, not a rainbow blanket. The cloth shifts
+          just enough to feel unreliable while the balls remain readable. */}
+      <rect x="0" y="0" width={g.w} height={g.h} filter={`url(#oil${id})`}
+        opacity=".16" style={{mixBlendMode:"soft-light",animation:"ck-hue 23s linear infinite"}}/>
+      <rect className="ck" x="-3" y="-2" width={g.w+6} height={g.h+4} fill={`url(#rain${id})`}
+        filter={`url(#soften${id})`} opacity=".24"
+        style={{mixBlendMode:"screen",animation:"ck-acid-tide 9s ease-in-out infinite"}}/>
+      {[[0.30,26,0],[0.55,-20,-7],[0.76,17,-13]].map(([y,amp,delay],i)=>(
+        <path key={i} className="ck" filter={`url(#soften${id})`}
+          d={`M-8 ${g.h*y} C ${g.w*0.28} ${g.h*y-amp}, ${g.w*0.66} ${g.h*y+amp}, ${g.w+8} ${g.h*y-amp*0.35}`}
+          fill="none" stroke={`url(#aur${id})`} strokeWidth={1.2+i*.34} strokeLinecap="round"
+          style={{animation:`ck-ribbon ${21+i*5}s ease-in-out infinite`,animationDelay:`${delay}s`,
+                  mixBlendMode:"screen",opacity:.54}}/>))}
+    </g>}
+    {T.fastCloth&&<rect x="0" y="0" width={g.w} height={g.h} fill={`url(#vodkaWash${id})`}
+      opacity=".72" style={{pointerEvents:"none",mixBlendMode:"screen"}}/>}
+    {T.steady&&<rect className="ck" x="0" y="0" width={g.w} height={g.h} fill={`url(#mollyWash${id})`}
+      style={{pointerEvents:"none",mixBlendMode:"screen",animation:"ck-molly-wash 2.15s ease-in-out infinite"}}/>}
+    {T.echo&&<rect className="ck" x="0" y="0" width={g.w} height={g.h} fill={`url(#peyoteWash${id})`}
+      style={{pointerEvents:"none",mixBlendMode:"screen",animation:"ck-peyote-wash 7s ease-in-out infinite"}}/>}
+    {T.ends&&<g style={{pointerEvents:"none",mixBlendMode:"screen"}} opacity=".7">
+      <circle cx={g.w/2} cy={g.h/2} r={Math.min(g.w,g.h)*.38} fill={`url(#dmtCore${id})`}/>
+      <g className="ck" style={{animation:"ck-dmt-turn 24s linear infinite"}}>
+        {[.18,.28,.37].map((r,i)=>{const R=Math.min(g.w,g.h)*r,pts=Array.from({length:8},(_,k)=>{
+          const a=Math.PI*2*k/8+(i%2?Math.PI/8:0);return `${g.w/2+Math.cos(a)*R},${g.h/2+Math.sin(a)*R}`;}).join(" ");
+          return <polygon key={i} points={pts} fill="none" stroke={i===1?"#c68bff":"#83e7f3"}
+            strokeWidth={i===1?.17:.12} strokeOpacity={.28+i*.09}/>;})}
+        {Array.from({length:8},(_,k)=>{const a=Math.PI*2*k/8,R=Math.min(g.w,g.h)*.37;
+          return <line key={k} x1={g.w/2} y1={g.h/2} x2={g.w/2+Math.cos(a)*R} y2={g.h/2+Math.sin(a)*R}
+            stroke={k%2?"#b482ef":"#8be9f4"} strokeWidth=".1" strokeOpacity=".24"/>;})}
+      </g>
+    </g>}
+
+    {/* An effect that changes the RULES has to change the TABLE, or the player
+        has no way of knowing it is running. Each one gets its own mark. */}
+    {T.tilt&&<g style={{pointerEvents:"none"}}>
+      <rect className="ck" x="0" y="0" width={g.w} height={g.h}
+        fill={T.tilt>0?`url(#tiltD${id})`:`url(#tiltU${id})`}
+        style={{animation:"ck-swim 6s ease-in-out infinite"}}/>
+      {[.13,.29,.47,.68,.86].map((f,i)=>{const from=T.tilt>0?4:g.h-4,to=T.tilt>0?g.h-4:4;
+        return <circle key={"gravity"+i} cx={g.w*f} cy={from} r=".38" fill="#f0b96d" fillOpacity=".68"
+          stroke="#ffe1a8" strokeOpacity=".44" strokeWidth=".11" filter={`url(#glow${id})`}>
+          <animate attributeName="cy" values={`${from};${to};${from}`} dur={`${4.3+i*.61}s`} begin={`${i*-.83}s`} repeatCount="indefinite"/>
+          <animate attributeName="r" values=".28;.52;.28" dur={`${2.2+i*.17}s`} repeatCount="indefinite"/>
+        </circle>;})}
+      {/* A carpenter's level makes the shared table rule legible without
+          pretending that glowing rain is part of a pool hall. */}
+      <g transform={`translate(${g.w-16} 2.2)`} opacity=".9">
+        <rect x="0" y="0" width="13.5" height="2.5" rx="1.25" fill="#0b0d10" fillOpacity=".72"
+          stroke="#e4b46e" strokeOpacity=".72" strokeWidth=".22"/>
+        <line x1="6.75" y1=".35" x2="6.75" y2="2.15" stroke="#e4b46e" strokeOpacity=".42" strokeWidth=".16"/>
+        <circle className="ck" cx={T.tilt>0?9.7:3.8} cy="1.25" r=".78" fill="#e7ba76"
+          style={{animation:"ck-level 2.8s ease-in-out infinite"}}/>
+      </g>
+    </g>}
+    {T.fastCloth&&aim&&(()=>{const dx=Math.cos(aim.angle),dy=Math.sin(aim.angle),nx=-dy,ny=dx,L=38;
+      return <g style={{pointerEvents:"none"}} clipPath={`url(#bed${id})`}>
+        {[-2.2,0,2.2].map((o,i)=>{const sx=aim.x+nx*o,sy=aim.y+ny*o;
+          const d=`M${sx-dx*3} ${sy-dy*3}Q${sx+dx*L*.45+nx*o*.16} ${sy+dy*L*.45+ny*o*.16} ${sx+dx*L} ${sy+dy*L}`;
+          return <g key={i}><path d={d} fill="none" stroke="#b8e9fb" strokeWidth={i===1?.28:.17}
+              strokeLinecap="round" strokeOpacity={i===1?.32:.18}/>
+            <circle r={i===1?.31:.23} fill="#d8f5ff" opacity={i===1?.68:.44} filter={`url(#glow${id})`}>
+              <animateMotion path={d} dur={`${2.7+i*.45}s`} begin={`${i*-.65}s`} repeatCount="indefinite"/>
+            </circle></g>;})}
+        {[1,2,3].map(k=><circle key={"wake"+k} cx={aim.x-dx*k*.72} cy={aim.y-dy*k*.72} r={BR*(1.05+k*.1)}
+          fill="none" stroke="#bcecff" strokeWidth=".15" strokeOpacity={.25/k}/>) }
+        <circle cx={aim.x} cy={aim.y} r={BR*1.72} fill="none" stroke="#c9effc" strokeOpacity=".28" strokeWidth=".18"/>
+      </g>;})()}
+    {T.steady&&balls&&(()=>{const c=balls.find(b=>b.n===0&&!b.in);if(!c)return null;
+      const near=balls.filter(b=>!b.in&&b.n!==0).sort((a,b)=>Math.hypot(a.x-c.x,a.y-c.y)-Math.hypot(b.x-c.x,b.y-c.y)).slice(0,4);
+      return(<g style={{pointerEvents:"none"}}>
+        {near.map((b,i)=><g key={"link"+b.n} className="ck" style={{animation:`ck-neural ${2.8+i*.37}s ease-in-out infinite`,animationDelay:`${i*-.42}s`}}>
+          <line x1={c.x} y1={c.y} x2={b.x} y2={b.y} stroke="#e7b6ff" strokeWidth=".14" strokeOpacity=".24"/>
+          <circle cx={(c.x+b.x)/2} cy={(c.y+b.y)/2} r=".25" fill="#f4d9ff" opacity=".62" filter={`url(#glow${id})`}/>
+        </g>)}
+        <circle className="ck" cx={c.x} cy={c.y} r={BR*3.9} fill={`url(#focusRing${id})`}
+          style={{animation:"ck-focus 3.2s ease-in-out infinite"}}/>
+        {[-1,1].flatMap(sx=>[-1,1].map(sy=><path key={sx+","+sy}
+          d={`M${c.x+sx*BR*2.55} ${c.y+sy*BR*1.45}L${c.x+sx*BR*2.55} ${c.y+sy*BR*2.55}L${c.x+sx*BR*1.45} ${c.y+sy*BR*2.55}`}
+          fill="none" stroke="#efd2ff" strokeOpacity=".72" strokeWidth=".22" strokeLinecap="round"/>))}
+        <circle cx={c.x} cy={c.y} r={BR*1.34} fill="none" stroke="#e7c3fb" strokeOpacity=".28" strokeWidth=".13"/>
+      </g>);})()}
+    {T.echo&&balls&&<g style={{pointerEvents:"none"}}>
+      {balls.filter(b=>!b.in).map(b=>[
+        [1,"#eadcae",.42,-.32],[2,"#9ed7c2",.76,-.57],[3,"#d0a8dc",1.05,-.78]
+      ].map(([k,col,ox,oy])=><circle key={"echo"+b.n+"-"+k} cx={b.x+ox} cy={b.y+oy} r={BR*(1.04+k*.035)}
+        fill={col} fillOpacity={(b.n===0?.14:.065)/k} stroke={col}
+        strokeOpacity={(b.n===0?.5:.24)/k} strokeWidth=".13"/>))}
+      {(()=>{const c=balls.find(b=>b.n===0&&!b.in);if(!c)return null;
+        const pts=Array.from({length:110},(_,i)=>{const t=i/109*Math.PI*5.5,r=.28+(i/109)*BR*7.2;
+          return[c.x+Math.cos(-t)*r,c.y+Math.sin(-t)*r*.72];});
+        const spiral=pts.map((q,i)=>(i?"L":"M")+q[0].toFixed(2)+" "+q[1].toFixed(2)).join("");
+        return <g opacity=".88">
+          <g className="ck" style={{animation:"ck-peyote-turn 18s linear infinite"}}>
+            {Array.from({length:10},(_,i)=>{const a=i*36,col=["#e8c979","#79bea3","#b987c8"][i%3];
+              return <ellipse key={i} cx={c.x} cy={c.y-BR*4.5} rx={BR*.72} ry={BR*2.25}
+                transform={`rotate(${a} ${c.x} ${c.y})`} fill={col} fillOpacity=".12" stroke={col}
+                strokeOpacity=".46" strokeWidth=".16"/>;})}
+            <circle cx={c.x} cy={c.y} r={BR*2.05} fill="#d9b767" fillOpacity=".10" stroke="#efd48d" strokeOpacity=".45" strokeWidth=".16"/>
+          </g>
+          <path className="ck" d={spiral} fill="none" stroke={`url(#peyoteSpiral${id})`} strokeWidth=".36"
+            strokeLinecap="round" filter={`url(#glow${id})`} style={{animation:"ck-rewind 8.5s linear infinite"}}/>
+          {pts.filter((_,i)=>i%18===0).map((q,i)=><circle key={i} cx={q[0]} cy={q[1]} r=".27"
+            fill={["#f0d181","#83c9ae","#bd91cd"][i%3]} opacity=".7"/>)}
+        </g>;})()}
+    </g>}
+    {T.noPreview&&<rect x="0" y="0" width={g.w} height={g.h} fill="#000" opacity=".34"/>}
+    </g>
+
+    {/* cushions: same cloth, one shade down, with a crisp nose line */}
+    {boundary&&<g>
+      <polygon points={boundary} fill="none" stroke={fill} strokeWidth={CD*2} strokeLinejoin="round"/>
+      <polygon points={boundary} fill="none" stroke={`url(#weave${id})`} strokeWidth={CD*2} strokeLinejoin="round" opacity=".8"/>
+      <polygon points={boundary} fill="none" stroke="#000" strokeWidth={CD*2} strokeLinejoin="round" opacity=".28"/>
+      <polygon points={boundary} fill="none" stroke="#000" strokeOpacity=".62" strokeWidth=".24" strokeLinejoin="round"/>
+    </g>}
+    {cush.map((poly,i)=>{const pts=poly.map(q=>q.join(",")).join(" ");
+      return(<g key={i}>
+        <polygon points={pts} fill={fill}/>
+        <polygon points={pts} fill={`url(#weave${id})`}/>
+        <polygon points={pts} fill="#000" opacity=".28"/>
+        <polygon points={pts} fill="none" stroke="#000" strokeOpacity=".55" strokeWidth=".22"/></g>);})}
+
+    {/* obstacle walls, built like cushions so they read as part of the table */}
+    {g.walls.map((w,i)=><g key={"w"+i}>
+      <rect x={w.x} y={w.y} width={w.w} height={w.h} rx=".5" fill={FRAME}/>
+      <rect x={w.x} y={w.y} width={w.w} height={w.h} rx=".5" fill="none" stroke="#000" strokeOpacity=".7" strokeWidth=".22"/></g>)}
+
+    {/* pockets last so they cut cleanly through cushion and frame alike */}
+    {/* Just the opening. No halo, no lip highlight — a pocket is a hole in the
+        slate, and any ring around it reads as decoration. The only rings that
+        belong here are the ketamine wells. */}
+    {pk.map((p,i)=><circle key={i} cx={p.cx} cy={p.cy} r={p.r} fill={`url(#pkt${id})`}/>)}
+    {/* the eight is being called: every pocket is a target until one is picked */}
+    {T.khole&&pk.map((p,i)=><g key={"kh"+i} style={{pointerEvents:"none"}}>
+      <circle className="ck" cx={p.cx} cy={p.cy} r={p.r*1.82} fill={`url(#well${id})`}
+        style={{animation:"ck-pocket 2.8s ease-in-out infinite",animationDelay:`${i*.12}s`}}/>
+      {/* Two quiet intake arcs replace the old dashed target rings. They point
+          into the opening and leave the pocket itself visually clean. */}
+      <path d={`M${p.cx-p.r*1.42} ${p.cy}A${p.r*1.42} ${p.r*1.42} 0 0 1 ${p.cx} ${p.cy-p.r*1.42}`}
+        fill="none" stroke={`url(#ketFade${id})`} strokeWidth=".34" strokeLinecap="round" filter={`url(#glow${id})`}/>
+      <path d={`M${p.cx+p.r*1.42} ${p.cy}A${p.r*1.42} ${p.r*1.42} 0 0 1 ${p.cx} ${p.cy+p.r*1.42}`}
+        fill="none" stroke={`url(#ketFade${id})`} strokeWidth=".27" strokeLinecap="round" filter={`url(#glow${id})`} opacity=".76"/>
+    </g>)}
+    {calls&&calls.map((p,i)=><circle key={"c"+i} cx={p.cx} cy={p.cy} r={p.r+1.1} fill="none"
+      stroke={C.warn} strokeOpacity=".85" strokeWidth=".5"/>)}
+    {called!=null&&pk[called]&&<circle cx={pk[called].cx} cy={pk[called].cy} r={pk[called].r+1.3}
+      fill="none" stroke={C.warn} strokeWidth=".7"/>}
+
+    {aim&&aim.show&&aim.ghostLine&&<polyline points={aim.ghostLine.path.map(q=>q.join(",")).join(" ")}
+      fill="none" stroke="#fff" strokeOpacity=".3" strokeWidth=".22" strokeDasharray="1.6 1.4"/>}
+    {aim&&aim.show&&aim.p&&<g>
+      {/* the shot as it will actually be played, curve and all, ending where
+          the cue ball genuinely runs out of legs */}
+      <polyline points={aim.p.path.map(q=>q.join(",")).join(" ")} fill="none"
+        stroke="#fff" strokeOpacity={aim.live?".62":".38"} strokeWidth=".24" strokeDasharray="1.6 1.4"/>
+      {aim.p.short&&!aim.p.potted&&aim.stop&&<circle cx={aim.p.path[aim.p.path.length-1][0]}
+        cy={aim.p.path[aim.p.path.length-1][1]} r={BR*0.8} fill="none"
+        stroke={C.warn} strokeOpacity=".7" strokeWidth=".22" strokeDasharray=".7 .7"/>}
+      {aim.p.ghost&&aim.objLine&&<>
+        <circle cx={aim.p.ghost[0]} cy={aim.p.ghost[1]} r={BR} fill="none" stroke="#fff" strokeOpacity=".55" strokeWidth=".2"/>
+        <polyline points={aim.p.objPath.map(q=>q.join(",")).join(" ")} fill="none"
+          stroke={C.accent} strokeOpacity=".85" strokeWidth=".3"/>
+        {aim.cueLine&&<polyline points={aim.p.cuePath.map(q=>q.join(",")).join(" ")} fill="none"
+          stroke="#fff" strokeOpacity=".45" strokeWidth=".2" strokeDasharray=".8 .9"/>}
+      </>}
+    </g>}
+    {balls&&balls.filter(b=>!b.in&&b.n!==0).map(b=><Ball key={b.n} b={b} id={id} ring={ringFor?ringFor(b):null} blank={blank}/>)}
+    {balls&&balls.filter(b=>!b.in&&b.n===0).map(b=><Ball key="cue" b={b} id={id}/>)}
+    {T.fastCloth&&balls&&aim&&(()=>{const dx=Math.cos(aim.angle),dy=Math.sin(aim.angle);
+      return <g style={{pointerEvents:"none",mixBlendMode:"screen"}}>{balls.filter(b=>!b.in).map(b=>[1,2,3].map(k=><circle
+        key={`v${b.n}-${k}`} cx={b.x-dx*k*.52} cy={b.y-dy*k*.52} r={BR*(1+.04*k)} fill="none"
+        stroke={b.n===0?"#dff8ff":"#8ddcf4"} strokeWidth=".14" strokeOpacity={(b.n===0?.42:.22)/k}/>))}</g>;})()}
+    {T.steady&&balls&&<g style={{pointerEvents:"none",mixBlendMode:"screen"}}>
+      {balls.filter(b=>!b.in).map((b,i)=><circle key={"molly"+b.n} className="ck" cx={b.x} cy={b.y} r={BR*1.65}
+        fill="none" stroke={["#ff86dc","#b489ff","#65e3e9","#ffd071"][i%4]} strokeWidth=".19" strokeOpacity=".5"
+        style={{animation:`ck-molly-ball ${1.85+(i%4)*.16}s ease-in-out infinite`,animationDelay:`${i*-.12}s`}}/>)}
+    </g>}
+    {T.phase&&balls&&(()=>{const c=balls.find(b=>b.n===0&&!b.in); if(!c)return null;
+      const blob=(R,seed)=>Array.from({length:44},(_,i)=>{const a=i/44*Math.PI*2,
+        rr=R*(1+.12*Math.sin(a*3+seed)+.065*Math.cos(a*5-seed*.7));
+        return`${c.x+Math.cos(a)*rr},${c.y+Math.sin(a)*rr*.66}`;}).join(" ");
+      return(<g style={{pointerEvents:"none",mixBlendMode:"screen"}}>
+        <g clipPath={`url(#bed${id})`}>
+          {balls.filter(b=>!b.in).map(b=><g key={"split"+b.n}>
+            <circle cx={b.x-.34} cy={b.y+.16} r={BR*1.04} fill="none" stroke="#ff62c6" strokeWidth=".23" strokeOpacity=".34"/>
+            <circle cx={b.x+.34} cy={b.y-.16} r={BR*1.04} fill="none" stroke="#54dfe7" strokeWidth=".23" strokeOpacity=".34"/>
+          </g>)}
+          {[6.5,10.5,15.5,21.5].map((r,i)=><polygon key={i} className="ck" points={blob(r,i*1.7)}
+            fill="none" stroke={`url(#aur${id})`} strokeWidth={.2+i*.035} strokeOpacity={.34+i*.08}
+            filter={`url(#glow${id})`} style={{animation:`ck-acid-contour ${8+i*2.4}s linear infinite`,animationDelay:`${i*-.9}s`}}/>)}
+        </g>
+        {aim&&aim.p&&<>
+          <polyline points={aim.p.path.map(q=>q.join(",")).join(" ")} fill="none" stroke="#ef7fc7"
+            strokeWidth=".46" strokeOpacity=".16" transform="translate(-.24 .12)"/>
+          <polyline points={aim.p.path.map(q=>q.join(",")).join(" ")} fill="none" stroke="#62dce3"
+            strokeWidth=".46" strokeOpacity=".16" transform="translate(.24 -.12)"/>
+        </>}
+        <path className="ck" d={`M${c.x-BR*2.1} ${c.y}A${BR*2.1} ${BR*2.1} 0 0 1 ${c.x} ${c.y-BR*2.1}
+          M${c.x+BR*2.1} ${c.y}A${BR*2.1} ${BR*2.1} 0 0 1 ${c.x} ${c.y+BR*2.1}`}
+          fill="none" stroke="#cdb7ff" strokeWidth=".24" strokeLinecap="round" filter={`url(#glow${id})`}
+          style={{animation:"ck-phase 5.2s linear infinite"}}/>
+        <circle className="ck" cx={c.x-.18} cy={c.y} r={BR*1.18} fill="none" stroke="#ef7fc7"
+          strokeWidth=".28" opacity=".44" style={{animation:"ck-phase-pulse 2.4s ease-in-out infinite"}}/>
+        <circle className="ck" cx={c.x+.18} cy={c.y} r={BR*1.18} fill="none" stroke="#62dce3"
+          strokeWidth=".28" opacity=".44" style={{animation:"ck-phase-pulse 2.4s ease-in-out infinite reverse"}}/>
+      </g>);})()}
+    {T.ends&&T.ends.map((q,i)=>{if(q.in)return null;const bi=q.n===0?null:ballInfo(q.n),col=q.n===0?"#f4fbff":bi.col;
+      const from=balls&&balls.find(b=>b.n===q.n&&!b.in),mx=from?(from.x+q.x)/2:q.x,my=from?(from.y+q.y)/2:q.y;
+      return <g key={"e"+i} className="ck" style={{animation:"ck-forecast 3.1s ease-in-out infinite",animationDelay:`${i*.045}s`}}>
+        {from&&<path d={`M${from.x} ${from.y}Q${mx+(i%2?.8:-.8)} ${my-1.2} ${q.x} ${q.y}`}
+          fill="none" stroke={col} strokeWidth=".16" strokeOpacity=".26" filter={`url(#glow${id})`}/>} 
+        <circle cx={q.x} cy={q.y} r={BR*1.08} fill={col} fillOpacity=".16" stroke={col} strokeWidth=".22" strokeOpacity=".72"/>
+        <circle cx={q.x} cy={q.y} r={BR*.78} fill="#071219" fillOpacity=".26" stroke="#fff" strokeOpacity=".12" strokeWidth=".1"/>
+        {bi&&<text x={q.x} y={q.y+.31} textAnchor="middle" fontFamily={F.mono} fontSize=".72" fontWeight="500" fill="#eefaff" opacity=".76">{bi.num}</text>}
+      </g>;})}
+    {aim&&aim.stick&&<CueStick x={aim.x} y={aim.y} angle={aim.angle} pull={aim.pull} tip={aim.tip} live={aim.live} id={id}/>}
+  </svg>);}
+
+// ===== 5. PHYSICS ============================================================
+// A real billiard model rather than a bouncing point.
+//
+// Every ball carries linear velocity AND angular velocity: wx,wy are the
+// horizontal axes that make it roll, wz is the vertical axis — sidespin.
+// The contact patch under the ball moves at
+//        u = (vx - R·wy , vy + R·wx)
+// If u is non-zero the ball is SLIDING and heavy friction acts along -u, which
+// both slows the ball and spins it up until u reaches zero. From then on it is
+// ROLLING and only light rolling resistance applies. That single distinction is
+// what produces draw, follow, stun, and the way a hard shot skids before it
+// takes. Nothing here is faked with a multiplier.
+// Specials that alter one shot set a flag here; the shot loop and the aim
+// preview both read it, so what you are shown is what you get.
+const RULE={deadRail:false,stunCue:false,spinHold:false,noSquirt:false,fastCloth:false,tilt:0,
+  phase:false,phaseBall:null,pocketBoost:1,softJaws:false,magnetBoost:1.7};
+const G=386;                 // gravity, inches/s²
+const MU_SLIDE=0.19;         // cloth friction while the ball is skidding
+const MU_ROLL=0.055;         // rolling resistance once it takes
+const MU_SPIN=0.7;           // how fast sidespin bleeds off, per second
+const MU_BALL=0.055;         // ball-on-ball friction — this is what throws a cut
+const MU_CUSH=0.30;          // cushion friction — this is what english bites on
+const SQUIRT=0.012;          // how far side english pushes the cue off the aim line
+const E_BALL=0.95;           // ball-on-ball restitution
+const STOP_V=0.55, STOP_W=0.9;
+const MAXV=440;              // a full-blooded break, inches/s (about 25 mph)
+
+// Collision geometry: the cushion noses AND the angled jaw faces either side of
+// every pocket, plus the four faces of each obstacle wall. Because the jaws are
+// real surfaces, a ball can rattle in them and come back out.
+function tableSegs(g){
+  if(g._segs)return g._segs;
+  const segs=[];
+  if(g.boundary){for(let i=0;i<g.boundary.length;i++)segs.push([g.boundary[i],g.boundary[(i+1)%g.boundary.length]]);}
+  else for(const poly of cushions(g)){
+      const [n0,n1,b1,b0]=poly;
+      segs.push([n0,n1],[n1,b1],[b0,n0]);}      // nose, then both jaw faces
+  for(const w of g.walls){
+    const c=[[w.x,w.y],[w.x+w.w,w.y],[w.x+w.w,w.y+w.h],[w.x,w.y+w.h]];
+    for(let i=0;i<4;i++)segs.push([c[i],c[(i+1)%4]]);
+  }
+  g._segs=segs;return segs;
+}
+// Each ball also carries its orientation: `p` is the pole the number sits on
+// (and the axis the stripe rings), `q` is a second axis so the number itself
+// turns. Both are world-frame unit vectors rotated by the angular velocity every
+// step, which is what makes a rolling ball visibly roll and a spinning one spin.
+const newBall=(n,x,y)=>{const s=Math.sin(n*2.4)*0.5+0.5, t=n*1.7;
+  return{n,x,y,vx:0,vy:0,wx:0,wy:0,wz:0,in:false,pocket:undefined,
+    px:Math.cos(t)*s,py:Math.sin(t)*s,pz:Math.sqrt(Math.max(0,1-s*s)),
+    qx:-Math.sin(t),qy:Math.cos(t),qz:0};};
+// v += (w x v) dt, then renormalise
+function spinVec(b,dt){
+  const {wx,wy,wz}=b;
+  let x=b.px+(wy*b.pz-wz*b.py)*dt, y=b.py+(wz*b.px-wx*b.pz)*dt, z=b.pz+(wx*b.py-wy*b.px)*dt;
+  let l=Math.hypot(x,y,z)||1; b.px=x/l; b.py=y/l; b.pz=z/l;
+  x=b.qx+(wy*b.qz-wz*b.qy)*dt; y=b.qy+(wz*b.qx-wx*b.qz)*dt; z=b.qz+(wx*b.qy-wy*b.qx)*dt;
+  l=Math.hypot(x,y,z)||1; b.qx=x/l; b.qy=y/l; b.qz=z/l;
+}
+
+// Strike the cue ball. `tip` is where the tip lands on the face, in ball radii:
+// tip.a is left/right (english), tip.b is high/low (follow/draw). Real cue tips
+// can't safely go past half a radius, which is why the widget stops there.
+// `el` is how far the butt of the cue is raised. Level, side english just spins
+// the ball. Raised, some of that spin tips onto the axis the ball is travelling
+// along — and spin about the direction of travel drags the contact patch
+// sideways, so friction pushes the ball sideways too. That is a curve, and it
+// falls out of the same friction model as everything else. Steeper cue, more
+// bend, less speed forward, exactly like the real shot.
+function strike(cue,angle,speed,tip,el){
+  const a=tip?tip.a:0, b=tip?tip.b:0, e=el||0;
+  const ce=Math.cos(e), se=Math.sin(e);
+  const th=angle-(RULE.noSquirt?0:a*SQUIRT*ce);
+  const dx=Math.cos(th), dy=Math.sin(th);
+  const v=speed*ce;
+  cue.vx=dx*v; cue.vy=dy*v;
+  const k=2.5*speed/BR;
+  const wPerp=k*b*ce;        // follow / draw — axis across the line of travel
+  const wAlong=-k*a*se;      // masse — axis along the line of travel
+  cue.wx=wPerp*(-dy)+wAlong*dx;
+  cue.wy=wPerp*dx+wAlong*dy;
+  cue.wz=-k*a*ce;            // plain sidespin
+}
+
+function stepBall(b,dt){
+  const ux=b.vx-BR*b.wy, uy=b.vy+BR*b.wx, us=Math.hypot(ux,uy);
+  const a=MU_SLIDE*G;
+  // Slip closes at 7/2 of the friction rate. If it would close inside this step,
+  // don't integrate through it — jump straight to the rolling state, or the slip
+  // direction flips every frame and the friction cancels itself out.
+  if(us>3.5*a*dt){                               // still sliding after this step
+    const nx=ux/us, ny=uy/us;
+    b.vx-=a*dt*nx; b.vy-=a*dt*ny;
+    const k=(2.5*a*dt)/BR;
+    b.wx-=k*ny; b.wy+=k*nx;
+  }else{                                         // rolling
+    b.vx-=(2/7)*ux; b.vy-=(2/7)*uy;              // exact end-of-slide velocity
+    const sp=Math.hypot(b.vx,b.vy);
+    if(sp>0){const ns=Math.max(0,sp-MU_ROLL*(RULE.fastCloth?0.42:1)*G*dt); b.vx*=ns/sp; b.vy*=ns/sp;}
+    b.wy=b.vx/BR; b.wx=-b.vy/BR;
+  }
+  b.wz-=b.wz*Math.min(1,(b.n===0&&RULE.spinHold?MU_SPIN*0.25:MU_SPIN)*dt);
+  if(RULE.tilt)b.vy+=RULE.tilt*dt;   // Jäger: the slate is not level
+  spinVec(b,dt);
+  b.x+=b.vx*dt; b.y+=b.vy*dt;
+}
+
+// Cushion contact. The normal component rebounds; the tangential component is
+// worked on by friction against whatever the contact patch is doing, which is
+// where sidespin earns its keep — running english widens the rebound, reverse
+// english shortens it.
+function hitSeg(b,seg,ev){
+  const [p,q]=seg;
+  const ex=q[0]-p[0], ey=q[1]-p[1], L2=ex*ex+ey*ey||1;
+  let t=((b.x-p[0])*ex+(b.y-p[1])*ey)/L2; t=t<0?0:t>1?1:t;
+  const qx=p[0]+ex*t, qy=p[1]+ey*t;
+  let dx=b.x-qx, dy=b.y-qy, d=Math.hypot(dx,dy);
+  if(d>=BR)return false;
+  if(d<1e-9){dx=-ey;dy=ex;d=Math.hypot(dx,dy)||1;}
+  const nx=dx/d, ny=dy/d;
+  b.x=qx+nx*BR; b.y=qy+ny*BR;                    // lift clear of the face
+  const vn=b.vx*nx+b.vy*ny;
+  if(vn>=0)return false;                          // already leaving
+  const tx=-ny, ty=nx;
+  let vt=b.vx*tx+b.vy*ty;
+  let e=Math.max(0.7,Math.min(0.92,0.78+Math.abs(vn)*0.0006));
+  if(RULE.deadRail)e*=0.22;
+  if(RULE.softJaws&&b.n!==0)e*=0.30;   // ketamine: the jaws stop fighting back
+  const surf=vt-BR*b.wz;                          // contact patch speed along the face
+  let dvt=-MU_CUSH*(1+e)*Math.abs(vn)*Math.sign(surf||1);
+  if(Math.abs(dvt)>Math.abs(surf)*0.55)dvt=-Math.sign(surf||1)*Math.abs(surf)*0.55;
+  vt+=dvt;
+  b.wz+=-(2.5*dvt)/BR;
+  b.wx*=0.62; b.wy*=0.62;                         // the rail kills most of the roll
+  const nv=-vn*e;
+  b.vx=nx*nv+tx*vt; b.vy=ny*nv+ty*vt;
+  if(ev)ev.rail=true;
+  return true;
+}
+
+// Ball on ball: an almost-elastic normal impulse plus a tangential friction
+// impulse. The tangential part is throw — a cut shot with english does not send
+// the object ball exactly along the line of centres, and now neither does ours.
+function hitBalls(a,b,ev){
+  let dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+  if(d<=0||d>=BR*2)return false;
+  const cueHere=a.n===0||b.n===0, other=a.n===0?b.n:a.n;
+  if(a.power==="ghost"&&!a.ghostSpent){a.ghostSpent=true;if(ev)ev.power="Ghost slipped through contact.";return false;}
+  if(b.power==="ghost"&&!b.ghostSpent){b.ghostSpent=true;if(ev)ev.power="Ghost slipped through contact.";return false;}
+  if(cueHere&&RULE.phaseBall===other)return false;          // already going through this one
+  if(cueHere&&RULE.phase){RULE.phase=false;RULE.phaseBall=other;return false;}
+  if(d<1e-9){dx=1;dy=0;d=1;}
+  const nx=dx/d, ny=dy/d, ov=(BR*2-d)/2;
+  a.x-=nx*ov; a.y-=ny*ov; b.x+=nx*ov; b.y+=ny*ov;
+  const rel=(b.vx-a.vx)*nx+(b.vy-a.vy)*ny;
+  if(rel>=0)return false;
+  if(RULE.phase&&(a.n===0||b.n===0)){RULE.phase=false;return false;}  // acid: straight through
+  const mass=q=>q.power==="anchor"?7:q.power==="brick"?2.4:1;
+  const ma=mass(a),mb=mass(b),jn=-(1+E_BALL)*rel/(1/ma+1/mb);
+  a.vx-=jn/ma*nx; a.vy-=jn/ma*ny; b.vx+=jn/mb*nx; b.vy+=jn/mb*ny;
+  // surface speeds at the contact point, tangential component only
+  const tx=-ny, ty=nx;
+  const sa=(a.vx*tx+a.vy*ty)+BR*a.wz, sb=(b.vx*tx+b.vy*ty)-BR*b.wz;
+  const slip=sb-sa;
+  if(Math.abs(slip)>1e-4){
+    let jt=-slip/2*0.4;
+    const cap=MU_BALL*Math.abs(jn);
+    if(Math.abs(jt)>cap)jt=Math.sign(jt)*cap;
+    a.vx-=jt/ma*tx; a.vy-=jt/ma*ty; b.vx+=jt/mb*tx; b.vy+=jt/mb*ty;
+    a.wz-=(2.5*jt)/BR; b.wz-=(2.5*jt)/BR;
+  }
+  if(RULE.stunCue&&(a.n===0||b.n===0)){
+    const c=a.n===0?a:b; c.vx=c.vy=c.wx=c.wy=c.wz=0; RULE.stunCue=false;}
+  if(ev&&ev.first==null){ if(a.n===0)ev.first=b.n; else if(b.n===0)ev.first=a.n; }
+  return true;
+}
+
+function stepSim(bs,g,dt,ev){
+  if(!g._pk)g._pk=makePockets(g);
+  ev=ev||{};
+  const segs=tableSegs(g);
+  for(const b of bs){
+    if(b.in)continue;
+    if(Math.hypot(b.vx,b.vy)<STOP_V&&Math.abs(b.wz)<STOP_W&&
+       Math.hypot(b.vx-BR*b.wy,b.vy+BR*b.wx)<0.12){b.vx=b.vy=b.wx=b.wy=b.wz=0;continue;}
+    stepBall(b,dt);
+    let dropped=false;
+    for(let i=0;i<g._pk.length;i++){const p=g._pk[i];
+      // Ketamine's generous mouth must exist in the live simulation as well as
+      // the aim preview. Previously only predictPath() multiplied this radius.
+      const magnet=(b.power==="magnet"&&Math.hypot(b.vx,b.vy)<105)?RULE.magnetBoost:1;
+      if(Math.hypot(b.x-p.cx,b.y-p.cy)<p.capt*RULE.pocketBoost*magnet){
+        b.in=true;b.pocket=i;b.vx=b.vy=b.wx=b.wy=b.wz=0;dropped=true;
+        if(b.power==="bomb")for(const o of bs){if(o===b||o.in)continue;const dx=o.x-p.cx,dy=o.y-p.cy,d=Math.hypot(dx,dy)||1;
+          if(d<22){const kick=(22-d)*5.2;o.vx+=dx/d*kick;o.vy+=dy/d*kick;if(ev)ev.power="The Bomb blew the pocket open.";}}
+        break;}}
+    if(dropped)continue;
+    for(const s of segs)hitSeg(b,s,ev);
+  }
+  for(let i=0;i<bs.length;i++){ if(bs[i].in)continue;
+    for(let j=i+1;j<bs.length;j++){ if(bs[j].in)continue; hitBalls(bs[i],bs[j],ev); }}
+}
+const asleep=bs=>bs.every(b=>b.in||(b.vx===0&&b.vy===0&&b.wz===0));
+const fastest=bs=>bs.reduce((m,b)=>b.in?m:Math.max(m,Math.hypot(b.vx,b.vy)),0);
+
+// Advance the whole table by dt, subdividing so nothing tunnels through a rail.
+function advance(bs,g,dt,ev){
+  const v=Math.max(fastest(bs),1);
+  const n=Math.max(2,Math.min(48,Math.ceil(dt*v/0.35)));
+  for(let i=0;i<n;i++)stepSim(bs,g,dt/n,ev);
+}
+
+// ---- aim prediction ---------------------------------------------------------
+// Cheap geometric ray. The AI runs this thousands of times a turn, so it stays
+// analytic: first ball along the line, ignoring spin.
+function rayFirst(cue,angle,bs,g){
+  const dx=Math.cos(angle),dy=Math.sin(angle);
+  let bt=Infinity,hit=null;
+  for(const b of bs){ if(b.in||b.n===0)continue;
+    const ex=b.x-cue.x,ey=b.y-cue.y,proj=ex*dx+ey*dy; if(proj<=0)continue;
+    const perp=Math.abs(ex*dy-ey*dx); if(perp>BR*2)continue;
+    const t=proj-Math.sqrt(Math.max(0,BR*BR*4-perp*perp));
+    if(t>1e-4&&t<bt){bt=t;hit=b;}}
+  let lim=Infinity;
+  if(g.boundary){for(const s of tableSegs(g)){const ax=s[0][0]-cue.x,ay=s[0][1]-cue.y,
+      ex=s[1][0]-s[0][0],ey=s[1][1]-s[0][1],den=dx*ey-dy*ex;if(Math.abs(den)<1e-8)continue;
+      const t=(ax*ey-ay*ex)/den,u=(ax*dy-ay*dx)/den;if(t>0&&u>=0&&u<=1)lim=Math.min(lim,Math.max(0,t-BR));}}
+  else{const clip=(v,d,lo,hi)=>{if(d>0)lim=Math.min(lim,(hi-v)/d);else if(d<0)lim=Math.min(lim,(lo-v)/d);};
+    clip(cue.x,dx,BR,g.w-BR); clip(cue.y,dy,BR,g.h-BR);}
+  return{ball:hit&&bt<=lim?hit:null};
+}
+
+// The line the player sees is not geometry — it is the shot, actually played.
+// A copy of the cue ball is struck with the exact angle, speed, tip offset and
+// elevation dialled in, then run through the same physics as the real table.
+// So it curves when the shot curves, it bends off cushions correctly, and above
+// all it STOPS where the ball would really stop. Draw a straight line to a ball
+// the cue ball can't reach and you have lied to the player.
+function predictPath(cue,angle,speed,tip,el,bs,g,maxRails){
+  const keep={...RULE};
+  const t={...cue}; strike(t,angle,speed,tip,el);
+  const others=bs.filter(b=>!b.in&&b.n!==0);
+  const segs=tableSegs(g), pk=g._pk||(g._pk=makePockets(g));
+  const path=[[t.x,t.y]];
+  let hit=null, potted=false, stopped=false, rails=0, cool=0;
+  const dt=1/220;
+  for(let i=0;i<1400;i++){
+    stepBall(t,dt);
+    let touched=false;
+    for(const s of segs)if(hitSeg(t,s,null))touched=true;
+    if(touched&&cool<=0){rails++;cool=8;} else cool--;
+    for(const q of pk)if(Math.hypot(t.x-q.cx,t.y-q.cy)<q.capt*RULE.pocketBoost){potted=true;break;}
+    if(potted)break;
+    for(const o of others)if(Math.hypot(t.x-o.x,t.y-o.y)<BR*2){hit=o;break;}
+    if(hit)break;
+    if(i%4===0)path.push([t.x,t.y]);
+    if(Math.hypot(t.vx,t.vy)<0.7){stopped=true;break;}
+    if(rails>(maxRails==null?3:maxRails))break;   // EYE decides how far ahead you see
+  }
+  path.push([t.x,t.y]);
+  // `short` means the cue ball genuinely ran out of legs here — that gets the
+  // marker. Being cut off at three cushions does not, because it hasn't stopped.
+  if(!hit){Object.assign(RULE,keep);return{path,ghost:null,ball:null,objPath:null,cuePath:null,potted,short:stopped};}
+  // Play the contact out for real, so the two follow-on lines carry the spin.
+  const o={...hit};
+  hitBalls(t,o,null);
+  const objPath=[[o.x,o.y]], cuePath=[[t.x,t.y]];
+  for(let i=0;i<150;i++){
+    stepBall(o,dt); for(const s of segs)hitSeg(o,s,null);
+    stepBall(t,dt); for(const s of segs)hitSeg(t,s,null);
+    if(i%6===0){objPath.push([o.x,o.y]);cuePath.push([t.x,t.y]);}
+  }
+  const cut=(()=>{const g0=path[path.length-1];
+    const nx=hit.x-g0[0], ny=hit.y-g0[1], nl=Math.hypot(nx,ny)||1;
+    const vl=Math.hypot(t.vx,t.vy)||1;
+    return Math.abs((t.vx/vl)*(nx/nl)+(t.vy/vl)*(ny/nl));})();
+  Object.assign(RULE,keep);
+  return{path,ghost:[path[path.length-1][0],path[path.length-1][1]],ball:hit,objPath,cuePath,potted,short:false,cut};
+}
+
+// DMT. Play the entire shot out on a copy of the table and report where every
+// last ball comes to rest. Not a prediction line — the actual finished rack.
+function restingPlaces(bs,g,angle,speed,tip,el){
+  const keep={...RULE};
+  const c=bs.filter(b=>!b.in).map(b=>({...b}));
+  const cue=c.find(b=>b.n===0); if(!cue){Object.assign(RULE,keep);return null;}
+  strike(cue,angle,speed,tip,el);
+  let t=0;
+  while(!asleep(c)&&t<7){advance(c,g,1/120,{});t+=1/120;}
+  Object.assign(RULE,keep);
+  return c.map(b=>({n:b.n,x:b.x,y:b.y,in:b.in}));
+}
+
+// ===== 6. RULES ==============================================================
+function buildRack(g,racks,powerSet){
+  const bs=[],S=BR*2.04;
+  const order=[1,11,2,3,8,10,9,7,14,4,5,13,15,6,12];
+  const spot=racks===2?[g.w*0.56,g.w*0.82]:[g.rackSpot?g.rackSpot[0]:g.w*0.75];
+  spot.forEach((sx,ri)=>{let k=0,sy=g.rackSpot?g.rackSpot[1]:g.h/2;
+    for(let row=0;row<5;row++)for(let i=0;i<=row;i++){
+      bs.push(newBall(order[k]+ri*15,sx+row*S*.872,sy+(i-row/2)*S));k++;}});
+  const cue=g.cueSpot||[g.w*0.24,g.h/2];bs.push(newBall(0,cue[0],cue[1]));
+  const set=POWER_SETS[powerSet];if(set)for(const b of bs){const base=((b.n-1)%15)+1;if(set.map[base])b.power=set.map[base];}
+  return bs;
+}
+function insideBed(g,x,y){
+  if(!g.boundary)return x>=BR&&x<=g.w-BR&&y>=BR&&y<=g.h-BR;
+  let c=false,p=g.boundary;
+  for(let i=0,j=p.length-1;i<p.length;j=i++){
+    const a=p[i],b=p[j];if(((a[1]>y)!==(b[1]>y))&&(x<(b[0]-a[0])*(y-a[1])/(b[1]-a[1])+a[0]))c=!c;}
+  if(!c)return false;
+  return tableSegs(g).every(s=>{const [a,b]=s,ex=b[0]-a[0],ey=b[1]-a[1],l=ex*ex+ey*ey||1;
+    const t=Math.max(0,Math.min(1,((x-a[0])*ex+(y-a[1])*ey)/l));return Math.hypot(x-(a[0]+ex*t),y-(a[1]+ey*t))>=BR*.98;});
+}
+const groupOf=n=>ballInfo(n).group;
+
+// Cutthroat ownership. Each player gets floor(total / players) balls and the
+// remainder are neutral hazards. With two players that lands on the nicest
+// split there is: solids against stripes, with the eight left neutral.
+//   15 balls — 2p: 7 each + the 8    3p: 5 each     4p: 3 each + 13,14,15
+//   30 balls — 2p: 14 each + both 8s 3p: 10 each    4p: 7 each + 2 spare
+// Returns an array indexed by ball number: seat index, or -1 for neutral.
+function assignOwners(total,players){
+  const own=new Array(total+1).fill(-1);
+  if(players===2){
+    for(let n=1;n<=total;n++){const gp=groupOf(n);
+      if(gp==="solid")own[n]=0; else if(gp==="stripe")own[n]=1;}
+    return own;}
+  const per=Math.floor(total/players);
+  for(let i=0;i<players;i++)for(let k=0;k<per;k++)own[i*per+k+1]=i;
+  return own;
+}
+const footSpot=g=>g.rackSpot?{x:g.rackSpot[0],y:g.rackSpot[1]}:{x:g.w*((g.racks||1)===2?0.56:0.75),y:g.h/2};
+// Put a ball back on the foot spot, sliding toward the foot rail if it's taken.
+function spotBall(b,bs,g){
+  const f=footSpot(g); let x=f.x;
+  for(let i=0;i<40;i++){
+    const clash=bs.some(o=>o!==b&&!o.in&&Math.hypot(o.x-x,o.y-f.y)<BR*2.05);
+    if(!clash&&x>BR&&x<g.w-BR)break;
+    x+=BR*2.1;
+    if(x>g.w-BR*2)x=f.x-BR*2.1*(i+1);}
+  b.in=false; b.pocket=undefined; b.vx=b.vy=b.wx=b.wy=b.wz=0;
+  b.x=Math.max(BR,Math.min(g.w-BR,x)); b.y=f.y;
+}
+
+// ===== 7. AI =================================================================
+// Speed is derived, not guessed: work out how fast the cue ball has to leave the
+// tip for the object ball to just reach the pocket, allow for the energy lost in
+// a thin cut, then add a small margin. Anything more is how you slop the eight in.
+// Cue speed needed for the object ball to just reach the pocket, allowing for
+// the energy a cut throws away. Anything harder is how you slop the eight in.
+function shotSpeed(cueDist,objDist,cut,breaking){
+  if(breaking)return MAXV*0.92;
+  const objV=Math.sqrt(2*MU_ROLL*G*Math.max(6,objDist))*1.35+14;
+  const need=objV/Math.max(0.28,cut)+Math.sqrt(2*MU_ROLL*G*Math.max(4,cueDist))*0.85;
+  return Math.max(22,Math.min(MAXV*0.62,need));
+}
+function pickShot(bs,g,legal,rating){
+  const cue=bs.find(b=>b.n===0); if(!cue)return null;
+  const up=bs.filter(b=>!b.in&&b.n!==0);
+  const breaking=up.length===bs.length-1;
+  const targets=up.filter(b=>legal(b.n));
+  let best=null;
+  for(const t of targets)for(const p of g.pockets){
+    const px=p.x-t.x,py=p.y-t.y,pl=Math.hypot(px,py)||1;
+    const gx=t.x-px/pl*BR*2, gy=t.y-py/pl*BR*2;      // ghost-ball contact point
+    const ax=gx-cue.x,ay=gy-cue.y,al=Math.hypot(ax,ay)||1;
+    const cut=(ax/al)*(px/pl)+(ay/al)*(py/pl);        // 1 = straight in
+    if(cut<0.2)continue;
+    const angle=Math.atan2(ay,ax);
+    const r=rayFirst(cue,angle,bs,g);
+    if(!r.ball||r.ball.n!==t.n)continue;              // something in the way
+    const score=cut*3-al/90-pl/90;
+    if(!best||score>best.score)best={score,angle,cut,al,pl};}
+  if(!best){const t=targets[0];
+    if(!t)return{angle:Math.random()*Math.PI*2,speed:70};
+    const d=Math.hypot(t.x-cue.x,t.y-cue.y);
+    return{angle:Math.atan2(t.y-cue.y,t.x-cue.x)+(Math.random()-.5)*.3,
+      speed:shotSpeed(d,d,.6,breaking)};}
+  const err=(1-Math.min(rating,850)/900)*0.15;
+  return{angle:best.angle+(Math.random()-.5)*err,
+    speed:shotSpeed(best.al,best.pl,best.cut,breaking)*(1+(Math.random()-.5)*0.14)};
+}
+
+// The computer calls the pocket its eight has the cleanest run at.
+function pickPocket(bs,g,pk){
+  const cue=bs.find(b=>b.n===0);
+  const eight=bs.find(b=>!b.in&&groupOf(b.n)==="eight");
+  if(!eight)return 0;
+  let best=0,bv=-Infinity;
+  pk.forEach((p,i)=>{
+    const px=p.x-eight.x,py=p.y-eight.y,pl=Math.hypot(px,py)||1;
+    const ax=eight.x-cue.x,ay=eight.y-cue.y,al=Math.hypot(ax,ay)||1;
+    const cut=(ax/al)*(px/pl)+(ay/al)*(py/pl);
+    const v=cut*3-pl/90;
+    if(v>bv){bv=v;best=i;}});
+  return best;
+}
+
+// ===== 8. SCREENS ============================================================
+// Page chrome: the palette, the font imports, and the one width the whole app
+// lays out inside. Everything else is inline styles off the tokens above.
+function Shell({children,wide}){
+  return(<div style={{minHeight:"100vh",background:C.bg,color:C.ink,fontFamily:F.body,
+    padding:"clamp(14px,3vw,26px) clamp(12px,2.4vw,22px) 30px",display:"flex",flexDirection:"column"}}>
+    <style>{`@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+      *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+      button{font-family:inherit;color:inherit;transition:background .14s,border-color .14s,color .14s,opacity .14s}
+      @media (hover:hover){button:not(:disabled):hover{border-color:${C.lineHi}}}
+      button:focus-visible{outline:2px solid ${C.accent};outline-offset:2px}
+      .thin{scrollbar-width:thin;scrollbar-color:#2c333b transparent}
+      .thin::-webkit-scrollbar{width:6px}.thin::-webkit-scrollbar-thumb{background:#2c333b;border-radius:3px}
+      .table-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+      @media(max-width:620px){.table-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+        .lab-compare,.lab-copy{grid-template-columns:1fr!important}}
+      /* --- the drugs, moving. every one of these is purely decorative: it is
+         layered on top of the table and never touches a coordinate the physics
+         reads, so the trip is a costume, not a variable. --- */
+      .ck{transform-box:fill-box;transform-origin:center}
+      @keyframes ck-ripple{0%{transform:scale(.62);opacity:.9}
+        70%{opacity:.18}100%{transform:scale(1.55);opacity:0}}
+      @keyframes ck-breathe{0%,100%{opacity:.10;transform:scale(.94)}50%{opacity:.32;transform:scale(1.06)}}
+      @keyframes ck-spin{to{transform:rotate(360deg)}}
+      @keyframes ck-spinback{to{transform:rotate(-360deg)}}
+      @keyframes ck-crawl{to{stroke-dashoffset:-40}}
+      @keyframes ck-flow{0%{opacity:.12;transform:translateX(-4px)}
+        45%{opacity:.85}100%{opacity:.12;transform:translateX(9px)}}
+      @keyframes ck-slide{0%{opacity:.15;transform:translateY(-4px)}
+        50%{opacity:.9}100%{opacity:.15;transform:translateY(5px)}}
+      @keyframes ck-hue{to{filter:hue-rotate(360deg)}}
+      @keyframes ck-ribbon{0%,100%{transform:translate3d(0,0,0) scaleY(1)}
+        33%{transform:translate3d(-2%,3px,0) scaleY(1.12)}
+        66%{transform:translate3d(2%,-4px,0) scaleY(.9)}}
+      @keyframes ck-acid-tide{0%,100%{opacity:.16;transform:translateX(-2%) scale(1.02)}50%{opacity:.42;transform:translateX(2%) scale(1.06)}}
+      @keyframes ck-acid-contour{to{transform:rotate(360deg);filter:hue-rotate(360deg)}}
+      @keyframes ck-streak{0%{transform:translateX(0);opacity:0}
+        12%{opacity:.85}88%{opacity:.85}100%{transform:translateX(var(--ckrun,900px));opacity:0}}
+      @keyframes ck-fall{0%{transform:translateY(-46%);opacity:0}
+        25%{opacity:.7}75%{opacity:.7}100%{transform:translateY(46%);opacity:0}}
+      @keyframes ck-bloom{0%{transform:scale(.05);opacity:.95}100%{transform:scale(1.6);opacity:0}}
+      @keyframes ck-throb{0%,100%{opacity:.55}50%{opacity:1}}
+      @keyframes ck-swim{0%,100%{transform:translateY(0) scaleY(1)}50%{transform:translateY(1.5px) scaleY(1.04)}}
+      @keyframes ck-level{0%,100%{transform:translateX(-.35px)}50%{transform:translateX(.35px)}}
+      @keyframes ck-focus{0%,100%{opacity:.55;transform:scale(.94)}50%{opacity:.9;transform:scale(1.035)}}
+      @keyframes ck-neural{0%,100%{opacity:.24}50%{opacity:.88}}
+      @keyframes ck-molly-wash{0%,100%{opacity:.34;transform:scale(.96)}45%{opacity:.92;transform:scale(1.025)}60%{opacity:.62;transform:scale(1.01)}}
+      @keyframes ck-molly-ball{0%,100%{opacity:.22;transform:scale(.78)}48%{opacity:.9;transform:scale(1.18)}}
+      @keyframes ck-peyote-wash{0%,100%{opacity:.38;filter:hue-rotate(0deg)}50%{opacity:.82;filter:hue-rotate(28deg)}}
+      @keyframes ck-dmt-turn{to{transform:rotate(360deg)}}
+      @keyframes ck-echo{0%{opacity:.5;transform:scale(.72)}70%{opacity:.08}100%{opacity:0;transform:scale(1.3)}}
+      @keyframes ck-pocket{0%,100%{opacity:.42;transform:scale(.96)}50%{opacity:.78;transform:scale(1.045)}}
+      @keyframes ck-phase{to{transform:rotate(360deg)}}
+      @keyframes ck-phase-pulse{0%,100%{opacity:.28;transform:scale(.94)}50%{opacity:.62;transform:scale(1.05)}}
+      @keyframes ck-rewind{to{transform:rotate(-360deg)}}
+      @keyframes ck-peyote-turn{to{transform:rotate(360deg)}}
+      @keyframes ck-forecast{0%,100%{opacity:.62}50%{opacity:1}}
+      @keyframes fx-enter{0%{opacity:0;transform:translateY(-6px) scale(.985)}100%{opacity:1;transform:none}}
+      @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}`}</style>
+    <div style={{width:"100%",maxWidth:wide?1080:820,margin:"0 auto",flex:1,display:"flex",flexDirection:"column"}}>{children}</div>
+  </div>);}
+
+function Head({onBack,title,right}){return(<div style={{display:"flex",alignItems:"center",gap:14,marginBottom:20}}>
+  {onBack&&<button onClick={onBack} style={{...btnGhost,padding:"7px 11px"}}>←</button>}
+  <div style={{fontFamily:F.display,fontSize:19,fontWeight:600,letterSpacing:-.2}}>{title}</div>
+  <div style={{marginLeft:"auto",display:"flex",gap:8}}>{right}</div></div>);}
+
+// Stats are 0-100 now, so a ten-segment bar just reads "full" for everything.
+// A proportional track with the number beside it shows the differences that
+// actually matter — and it has room for the over-100 and under-0 states drinks
+// can push you into.
+function Bars({v,color}){
+  const pc=Math.max(0,Math.min(100,v));
+  const over=v>100, under=v<0;
+  return(<span style={{display:"inline-flex",alignItems:"center",gap:5}}>
+    <span style={{position:"relative",width:52,height:5,borderRadius:3,background:C.line,overflow:"hidden"}}>
+      <span style={{position:"absolute",inset:0,width:`${pc}%`,borderRadius:3,
+        background:under?C.warn:over?C.good:color}}/></span>
+    <span style={{fontFamily:F.mono,fontSize:9.5,minWidth:20,
+      color:over?C.good:under?C.warn:C.ink2}}>{Math.round(v)}</span></span>);}
+
+// ===== EFFECT LAB ============================================================
+// A deliberately non-game screen for tuning. It uses the real TableArt,
+// DRINKS, BAND_FX and kit() functions, so nothing shown here is a mockup that
+// can quietly drift away from the match.
+const LAB_EFFECTS=[
+  {id:"none",name:"Clean table",tag:"BASELINE",summary:"No rule effect. Use this to judge how much visual treatment an effect is adding.",
+    mechanic:"Standard friction, pockets, collisions and prediction."},
+  {id:"vodka",name:"Vodka",tag:"FLOW",summary:"Cold streamlines, travelling light beads and cue-ball afterimages turn the aiming lane into a fast current.",
+    mechanic:"Rolling resistance is reduced to 42%, so balls keep travelling after they start rolling."},
+  {id:"molly",name:"Molly",tag:"LOCK",summary:"A breathing focus gate links the cue ball to the nearest balls like a pulsing neural map.",
+    mechanic:"Stroke error becomes zero and the preview expands to five cushions."},
+  {id:"jager",name:"Jäger",tag:"TILT",summary:"The slate washes downhill while glowing gravity beads repeatedly fall across it and the level confirms the lean.",
+    mechanic:"Every moving ball gains 11 in/s² of acceleration toward the low side for the rack."},
+  {id:"ket",name:"Ketamine",tag:"OPEN",summary:"Each pocket becomes a breathing depth well surrounded by curved intake lines that dissolve into the cloth.",
+    mechanic:"The live capture radius and preview radius are both multiplied by 1.9; jaw rebound is reduced to 30%."},
+  {id:"acid",name:"Acid",tag:"PHASE",summary:"The table separates into misregistered realities: every ball splits chromatically while organic contour waves grow and rotate from the cue ball.",
+    mechanic:"The cue ball ignores its first ball collision, then immediately becomes solid again."},
+  {id:"dmt",name:"DMT",tag:"END",summary:"Astral copies of the balls appear at their future resting places, connected to the present by luminous filaments.",
+    mechanic:"The actual physics engine simulates the full shot on a copy of the table before you shoot."},
+  {id:"echo",name:"Peyote",tag:"UNDO",summary:"An earthy peyote-flower mandala blooms around the cue ball while a backwards desert-time spiral holds the saved table state.",
+    mechanic:"After the shot, every unpocketed ball returns to its saved position while pocketed balls stay down."},
+];
+
+const plus=n=>n>0?`+${n}`:String(n||0);
+const statLine=d=>{const s=Object.entries(d.stats||{}).map(([k,v])=>`${k.toUpperCase()} ${plus(v)}`).join(" · ");
+  const c=d.cleanse?(d.cleanse>900?"CLEAR ACTIVE":`CUT ${d.cleanse} SHOT${d.cleanse>1?"S":""}`):"";
+  return [s||(!c?"RULE ONLY":""),c].filter(Boolean).join(" · ");};
+
+function EffectLab({onBack,cloth}){
+  const [focus,setFocus]=useState("ket");
+  const [charId,setCharId]=useState("fargo");
+  const [buzz,setBuzz]=useState(0);
+  const [active,setActive]=useState([]);
+  const [compare,setCompare]=useState(true);
+  const g=useMemo(()=>TABLES.regulation.build(),[]);
+  const balls=useMemo(()=>[
+    newBall(0,20,25),newBall(1,46,25),newBall(9,51,22.7),newBall(4,51,27.3),
+    newBall(8,72,12),newBall(13,79,38),newBall(6,34,39)
+  ],[]);
+  const cue=balls[0];
+  const aim={show:true,stick:true,x:cue.x,y:cue.y,angle:0,pull:.42,tip:{a:0,b:0},live:false,
+    p:{path:[[cue.x,cue.y],[43.75,25]],ghost:[43.75,25],ball:balls[1],short:false,potted:false,
+      objPath:[[46,25],[72,25]],cuePath:[[43.75,25],[55,30]]},
+    objLine:true,cueLine:true,stop:true,ghostLine:null,ends:null};
+  const tfxFor=id=>({
+    fastCloth:id==="vodka",steady:id==="molly",tilt:id==="jager"?11:0,
+    khole:id==="ket",phase:id==="acid",melt:id==="acid",echo:id==="echo",
+    ends:id==="dmt"?balls.map((b,i)=>({n:b.n,x:Math.min(96,Math.max(4,b.x+(i%2?8:-3))),
+      y:Math.min(46,Math.max(4,b.y+(i%3-1)*5)),in:false})):null
+  });
+  const selected=LAB_EFFECTS.find(x=>x.id===focus)||LAB_EFFECTS[0];
+  const ch=charOf(charId), band=bandOf(+buzz), bf=BAND_FX[band]||{};
+  const itemDelta={}; STAT_KEYS.forEach(k=>itemDelta[k]=0);
+  const ruleFlags={};
+  for(const id of active){const d=DRINKS[id]||SPIKES[id];if(!d)continue;
+    for(const k in (d.stats||{}))itemDelta[k]=(itemDelta[k]||0)+d.stats[k];
+    Object.assign(ruleFlags,d.flags||{});}
+  Object.assign(ruleFlags,bf.flags||{});
+  const effective={};
+  STAT_KEYS.forEach(k=>effective[k]=ch[k]+(itemDelta[k]||0)+((bf.stats||{})[k]||0));
+  const baseKit=kit(ch,{}), liveKit=kit(effective,ruleFlags);
+  const toggle=id=>setActive(a=>a.includes(id)?a.filter(x=>x!==id):[...a,id]);
+  const addFocused=()=>{const d=DRINKS[focus];if(!d)return;
+    setActive(a=>a.includes(focus)?a:[...a,focus]);
+    setBuzz(b=>Math.max(0,Math.min(120,Math.round(+b+buzzShift(d.buzz,ch.tol)))));};
+  const mph=v=>v*3600/63360;
+  const phys=[
+    ["Top cue speed",`${mph(MAXV*baseKit.speedMul).toFixed(1)} mph`,`${mph(MAXV*liveKit.speedMul).toFixed(1)} mph`],
+    ["Aim scatter",`±${(baseKit.aimErr*180/Math.PI).toFixed(3)}°`,`±${(liveKit.aimErr*180/Math.PI).toFixed(3)}°`],
+    ["Pace error",`±${(baseKit.speedErr*100).toFixed(2)}%`,`±${(liveKit.speedErr*100).toFixed(2)}%`],
+    ["Tip offset ceiling",`${(baseKit.maxTip*100).toFixed(1)}% radius`,`${(liveKit.maxTip*100).toFixed(1)}% radius`],
+    ["Cue elevation",`${baseKit.maxElev.toFixed(0)}°`,`${liveKit.maxElev.toFixed(0)}°`],
+    ["Preview depth",`${baseKit.rails} rail${baseKit.rails===1?"":"s"}`,`${ruleFlags.seeAll?5:liveKit.rails} rail${(ruleFlags.seeAll?5:liveKit.rails)===1?"":"s"}`],
+    ["Minimum power",`${(baseKit.minPower*100).toFixed(0)}%`,`${(liveKit.minPower*100).toFixed(0)}%`],
+  ];
+  const chooser=(ids,title)=><div style={{marginTop:14}}>
+    <div style={{...label,fontSize:9,marginBottom:7}}>{title}</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(145px,1fr))",gap:7}}>
+      {ids.map(id=>{const d=DRINKS[id]||SPIKES[id],on=active.includes(id),look=fxLook(id);
+        const bz=Math.round(buzzShift(d.buzz||0,ch.tol));
+        return <button key={id} onClick={()=>toggle(id)} style={{...panel,padding:"8px 9px",textAlign:"left",cursor:"pointer",
+          background:on?`rgba(${look.rgb},.12)`:C.panel2,border:on?`1px solid ${look.ink}`:`1px solid ${C.line}`}}>
+          <span style={{display:"flex",alignItems:"center",gap:6}}>
+            <b style={{fontSize:11.5,color:C.ink,flex:1}}>{d.name}</b>
+            <span style={{fontFamily:F.mono,fontSize:8,color:on?look.ink:C.muted}}>{on?"ON":"OFF"}</span></span>
+          <span style={{display:"block",fontFamily:F.mono,fontSize:8.2,color:C.muted,marginTop:4,lineHeight:1.35}}>{statLine(d)}</span>
+          <span style={{display:"block",fontFamily:F.mono,fontSize:8,color:(d.buzz||0)<0?C.good:C.warn,marginTop:3}}>
+            {d.buzz?`${plus(bz)} ACTUAL BUZZ`:"NO BUZZ"}</span>
+        </button>;})}
+    </div></div>;
+
+  return(<Shell wide>
+    <Head onBack={onBack} title="Effect Lab" right={<button onClick={()=>{setActive([]);setBuzz(0);setFocus("ket");}} style={btnGhost}>Reset lab</button>}/>
+    <div style={{...panel,padding:"12px 14px",marginBottom:14,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+      <div style={{flex:"1 1 420px"}}>
+        <div style={{fontFamily:F.display,fontSize:16,fontWeight:600}}>Every effect, outside the match</div>
+        <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginTop:3}}>Click any table to inspect it. The stat viewer below uses the same modifier and physics functions as a live rack.</div>
+      </div>
+      <button onClick={()=>setCompare(x=>!x)} style={compare?segOn:seg}>{compare?"✓ ":""}Baseline comparison</button>
+    </div>
+
+    <div style={{...panel,padding:"10px 12px",marginBottom:14}}>
+      <div style={{...label,fontSize:8.5,marginBottom:8}}>Recovery logic</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:8}}>
+        {[["cig","Trim"],["espresso","Cut through"],["fries","Hard reset"]].map(([id,verb])=>{const d=DRINKS[id];
+          return <div key={id} style={{padding:"8px 9px",borderRadius:8,background:C.panel2,border:`1px solid ${C.line}`}}>
+            <div style={{display:"flex",gap:8,alignItems:"baseline"}}><b style={{fontSize:11.5,color:C.ink}}>{d.name}</b>
+              <span style={{fontFamily:F.mono,fontSize:8,color:C.good}}>{d.buzz} BUZZ</span></div>
+            <div style={{fontSize:10,color:C.ink2,lineHeight:1.4,marginTop:3}}><b>{verb}:</b> {d.cleanse>900?"clear temporary positive and hostile effects":`remove ${d.cleanse} shot${d.cleanse>1?"s":""} from every active effect`}.</div>
+          </div>;})}
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:9}}>
+      {LAB_EFFECTS.slice(1).map(e=>{const on=e.id===focus,look=fxLook(e.id);
+        return <button key={e.id} onClick={()=>setFocus(e.id)} style={{...panel,padding:9,textAlign:"left",cursor:"pointer",
+          background:on?`rgba(${look.rgb},.08)`:C.panel,border:on?`1px solid ${look.ink}`:`1px solid ${C.line}`}}>
+          <TableArt tid="regulation" cloth={cloth||"oxblood"} balls={balls}
+            aim={["vodka","molly","acid"].includes(e.id)?aim:null} tfx={tfxFor(e.id)}/>
+          <span style={{display:"flex",alignItems:"baseline",gap:7,marginTop:7}}>
+            <b style={{fontFamily:F.display,fontSize:12.5,color:C.ink,flex:1}}>{e.name}</b>
+            <span style={{fontFamily:F.mono,fontSize:8,color:look.ink}}>{e.tag}</span></span>
+          <span style={{display:"block",fontSize:9.5,color:C.muted,lineHeight:1.4,marginTop:3}}>{e.summary}</span>
+        </button>;})}
+    </div>
+
+    <div style={{...panel,padding:12,marginTop:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <div><div style={{fontFamily:F.display,fontSize:17,fontWeight:600}}>{selected.name}</div>
+          <div style={{fontFamily:F.mono,fontSize:9,color:focus==="none"?C.muted:fxLook(focus).ink,marginTop:2}}>{selected.tag} · LIVE PREVIEW</div></div>
+        {DRINKS[focus]&&<button onClick={addFocused} style={{...btn,marginLeft:"auto",borderColor:fxLook(focus).ink}}>Load into stat viewer</button>}
+      </div>
+      <div className="lab-compare" style={{display:"grid",gridTemplateColumns:compare?"repeat(2,minmax(0,1fr))":"1fr",gap:10}}>
+        {compare&&<div><div style={{...label,fontSize:8.5,marginBottom:5}}>Baseline</div>
+          <TableArt tid="regulation" cloth={cloth||"oxblood"} balls={balls} aim={aim} tfx={{}}/></div>}
+        <div><div style={{...label,fontSize:8.5,marginBottom:5}}>{selected.name}</div>
+          <TableArt tid="regulation" cloth={cloth||"oxblood"} balls={balls} aim={aim} tfx={tfxFor(focus)}/></div>
+      </div>
+      <div className="lab-copy" style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10,marginTop:10}}>
+        <div style={{padding:"9px 10px",borderRadius:8,background:C.panel2,fontSize:11.5,color:C.ink2,lineHeight:1.5}}>{selected.summary}</div>
+        <div style={{padding:"9px 10px",borderRadius:8,background:C.panel2,fontSize:11.5,color:C.ink2,lineHeight:1.5}}><b style={{color:C.ink}}>Mechanic: </b>{selected.mechanic}</div>
+      </div>
+    </div>
+
+    <div style={{...panel,padding:"14px 15px",marginTop:14}}>
+      <div style={{display:"flex",alignItems:"end",gap:16,flexWrap:"wrap"}}>
+        <div style={{flex:"1 1 220px"}}><div style={{fontFamily:F.display,fontSize:18,fontWeight:600}}>Stat viewer</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:3}}>Base → item modifiers → buzz band → exact effective sheet → engine output</div></div>
+        <label style={{display:"grid",gap:5}}><span style={{...label,fontSize:8.5}}>Character</span>
+          <select value={charId} onChange={e=>setCharId(e.target.value)} style={{...btn,background:C.panel2,minWidth:150}}>
+            {CHAR_IDS.map(id=><option key={id} value={id}>{CHARS[id].name}</option>)}</select></label>
+        <div style={{flex:"1 1 260px",minWidth:220}}>
+          <div style={{display:"flex",justifyContent:"space-between",gap:10}}><span style={{...label,fontSize:8.5}}>Buzz · tolerance {ch.tol}</span>
+            <b style={{fontFamily:F.mono,fontSize:10,color:band==="Over"||band==="Cut off"?C.warn:band==="Sober"?C.muted:C.good}}>{band.toUpperCase()} · {buzz}</b></div>
+          <input type="range" min="0" max="120" step="1" value={buzz} onChange={e=>setBuzz(+e.target.value)} style={{width:"100%",accentColor:C.accent,marginTop:7}}/>
+        </div>
+      </div>
+
+      {chooser(byRole("boost"),"Boosts")}
+      {chooser(byRole("back"),"Back off")}
+      {chooser(byRole("effect"),"Rule effects")}
+      {chooser(SPIKE_IDS,"Hostile effects")}
+
+      <div style={{overflowX:"auto",marginTop:16}}><table style={{width:"100%",borderCollapse:"collapse",minWidth:620,fontSize:11.5}}>
+        <thead><tr>{["Stat","Base","Items","Buzz band","Effective","Total change"].map(h=><th key={h} style={{...label,fontSize:8.5,textAlign:h==="Stat"?"left":"right",padding:"7px 8px",borderBottom:`1px solid ${C.line}`}}>{h}</th>)}</tr></thead>
+        <tbody>{STATS.map(([k,n])=>{const base=ch[k],items=k==="tol"?0:itemDelta[k]||0,bd=k==="tol"?0:(bf.stats||{})[k]||0,fin=k==="tol"?base:effective[k],delta=fin-base;
+          return <tr key={k}><td style={{padding:"8px",borderBottom:`1px solid ${C.line}`,fontWeight:600,color:C.ink}}>{n}</td>
+            {[base,items,bd,fin,delta].map((v,i)=><td key={i} style={{padding:"8px",borderBottom:`1px solid ${C.line}`,textAlign:"right",fontFamily:F.mono,
+              color:i===3?C.ink:i===4?(v>0?C.good:v<0?C.warn:C.muted):i>0&&v!==0?(v>0?C.good:C.warn):C.ink2}}>{i===0||i===3?Math.round(v):plus(Math.round(v))}</td>)}</tr>;})}</tbody>
+      </table></div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8,marginTop:14}}>
+        {phys.map(([n,b,l])=><div key={n} style={{padding:"9px 10px",borderRadius:9,background:C.panel2,border:`1px solid ${C.line}`}}>
+          <div style={{...label,fontSize:8}}>{n}</div><div style={{display:"flex",alignItems:"baseline",gap:8,marginTop:5}}>
+            <span style={{fontFamily:F.mono,fontSize:9,color:C.muted,textDecoration:"line-through"}}>{b}</span>
+            <b style={{fontFamily:F.mono,fontSize:12,color:b===l?C.ink2:C.accent}}>{l}</b></div></div>)}
+      </div>
+
+      <div style={{marginTop:14,padding:"10px 11px",borderRadius:9,background:C.panel2}}>
+        <div style={{...label,fontSize:8.5,marginBottom:6}}>Active rule flags</div>
+        <div style={{fontFamily:F.mono,fontSize:10,color:Object.keys(ruleFlags).length?C.accent:C.muted,lineHeight:1.5}}>
+          {Object.keys(ruleFlags).length?Object.keys(ruleFlags).filter(k=>ruleFlags[k]).map(k=>k.toUpperCase()).join(" · "):
+            "NONE — numeric stats only"}</div>
+      </div>
+    </div>
+  </Shell>);
+}
+
+const KING_FIRST=["Maya","Reggie","Tasha","Vic","Nico","June","Dez","Lena","Omar","Frankie","Sol","Bree"];
+const KING_NICK=["Side Door","Cold Rack","Two-Rail","No Chalk","Railbird","Quiet Eye","Corner Tax","Night Shift","Dead Center","Last Call"];
+const KING_LAST=["Vega","Banks","Mercer","Flores","Price","Okafor","Tran","Santos","Reed","Bell"];
+const KING_TABLES=["regulation","octagon","gates","crossroads","keyhole","bowtie","pillars","offset"];
+function makeKingChallenge(streak){
+  const rating=Math.min(850,285+streak*43+Math.floor(Math.random()*76));
+  const team=streak>1&&(streak+1)%4===0;
+  return{name:`${KING_FIRST[Math.floor(Math.random()*KING_FIRST.length)]} “${KING_NICK[Math.floor(Math.random()*KING_NICK.length)]}” ${KING_LAST[Math.floor(Math.random()*KING_LAST.length)]}`,
+    rating,team,tid:KING_TABLES[(streak+Math.floor(Math.random()*KING_TABLES.length))%KING_TABLES.length],
+    char:CHAR_IDS[Math.floor(Math.random()*CHAR_IDS.length)],powerSet:POWER_SET_IDS[(streak+Math.floor(Math.random()*4))%4]};
+}
+const freshKing=()=>({streak:0,bank:0,buzz:0,challenge:makeKingChallenge(0),series:null,last:null,insurance:null});
+
+// Screen router plus every setting the match needs. App owns the setup; Game
+// owns everything that happens once the balls are on the table.
+function App(){
+  const [screen,setScreen]=useState("home");
+  const [tid,setTid]=useState("regulation");
+  const [cloth,setCloth]=useState("oxblood");
+  const [count,setCount]=useState(2);
+  const [mode,setMode]=useState("eight");
+  const [opts,setOpts]=useState({balls:true,specials:true,bar:true});
+  const [powerSet,setPowerSet]=useState("haunted");
+  const [drop,setDrop]=useState(null);
+  const [king,setKing]=useState(freshKing);
+  const [kingKey,setKingKey]=useState(0);
+  const [seats,setSeats]=useState(()=>CHAR_IDS.slice(0,4).map((c,i)=>
+    ({kind:i===0?"human":"cpu",char:c,rating:450,team:i%2?2:1})));
+  useEffect(()=>{const f=()=>setDrop(null);window.addEventListener("click",f);return()=>window.removeEventListener("click",f);},[]);
+  useEffect(()=>{const ok=modesFor(count); if(!ok.includes(mode))setMode(ok[0]);},[count]);
+
+  const upd=(i,p)=>setSeats(s=>s.map((x,j)=>j===i?{...x,...p}:x));
+  const launchKing=(target=1,challenge=king.challenge,insurance=false)=>{
+    setKing(k=>({...k,challenge,insurance:null,series:{target,us:0,them:0,insurance}}));
+    setKingKey(k=>k+1);setScreen("kingGame");};
+  const onKingResult=r=>setKing(k=>{
+    const s=k.series,us=s.us+(r.humanWin?1:0),them=s.them+(r.humanWin?0:1);
+    const rackPay=r.humanWin?18+Math.round(k.challenge.rating/48)+k.streak*2:4;
+    const bank=k.bank+rackPay,buzz=Math.max(0,r.buzz*.65),done=us>=s.target||them>=s.target;
+    if(!done){setTimeout(()=>setKingKey(x=>x+1),0);return{...k,bank,buzz,series:{...s,us,them},last:`Rack ${us+them}: ${r.humanWin?"won":"lost"} · +$${rackPay}`};}
+    const won=us>them;
+    if(won){const bonus=s.target===2?32+Math.round(k.challenge.rating/18):0,streak=k.streak+1;
+      setTimeout(()=>setScreen("king"),0);return{...k,bank:bank+bonus,buzz,streak,series:null,last:`${s.target===2?"Series":"Rack"} won · +$${rackPay+bonus}`,challenge:makeKingChallenge(streak),insurance:null};}
+    if(k.streak>=5&&s.target===1&&!s.insurance){setTimeout(()=>setScreen("king"),0);
+      return{...k,bank,buzz,series:null,last:"Rack lost · your five-win insurance is live",insurance:k.challenge};}
+    setTimeout(()=>setScreen("king"),0);return{...k,bank,buzz,streak:0,series:null,last:"The run ended. The bank is safe.",challenge:makeKingChallenge(0),insurance:null};
+  });
+
+  function Select({id,value,options,onPick,width}){
+    const open=drop===id, cur=options.find(o=>o.v===value)||options[0];
+    return(<span style={{position:"relative",display:"inline-block"}}>
+      <button onClick={e=>{e.stopPropagation();setDrop(open?null:id);}}
+        style={{...btn,padding:"8px 10px",width:width||130,display:"flex",alignItems:"center",gap:7,textAlign:"left",background:C.panel2}}>
+        {cur&&cur.dot&&<span style={{width:8,height:8,borderRadius:8,background:cur.dot,flexShrink:0}}/>}
+        <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:12.5}}>{cur&&cur.label}</span>
+        <span style={{color:C.muted,fontSize:9}}>▾</span></button>
+      {open&&<div className="thin" onClick={e=>e.stopPropagation()} style={{position:"absolute",top:"calc(100% + 5px)",left:0,zIndex:50,
+        width:Math.max(width||130,190),maxHeight:250,overflowY:"auto",...panel,padding:5,boxShadow:"0 16px 40px rgba(0,0,0,.6)"}}>
+        {options.map(o=><button key={String(o.v)} onClick={()=>{onPick(o.v);setDrop(null);}}
+          style={{display:"flex",gap:8,alignItems:"center",width:"100%",padding:"7px 8px",borderRadius:7,border:"none",
+            background:o.v===value?C.line:"transparent",color:C.ink,cursor:"pointer",textAlign:"left"}}>
+          {o.dot&&<span style={{width:8,height:8,borderRadius:8,background:o.dot,flexShrink:0}}/>}
+          <span style={{minWidth:0,flex:1}}>
+            <span style={{display:"block",fontSize:12.5,fontWeight:500,whiteSpace:"nowrap"}}>{o.label}</span>
+            {o.sub&&<span style={{display:"block",fontFamily:F.mono,fontSize:9.5,color:C.muted,whiteSpace:"nowrap",
+              overflow:"hidden",textOverflow:"ellipsis"}}>{o.sub}</span>}</span></button>)}
+      </div>}</span>);}
+
+  const ClothPicker=()=>(<div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+    {CLOTH_IDS.map(k=>{const on=cloth===k,cl=CLOTHS[k];
+      const sw=cl.kind==="solid"?cl.base
+        :cl.kind==="dye"?`conic-gradient(${cl.cols.join(",")},${cl.cols[0]})`
+        :cl.kind==="heat"?"radial-gradient(circle at 38% 40%,#fff3b0,#ff9a1f 30%,#e0332a 55%,#5a1470 78%,#050a18)"
+        :cl.base;
+      return(<button key={k} onClick={()=>setCloth(k)} title={cl.name}
+        style={{width:26,height:26,borderRadius:7,padding:0,cursor:"pointer",background:sw,
+          border:on?`2px solid ${C.accent}`:`1px solid ${C.line}`,boxShadow:on?"0 0 0 3px rgba(127,166,196,.14)":"none"}}/>);})}
+    <span style={{...label,marginLeft:4}}>{CLOTHS[cloth].name}</span></div>);
+
+  // ---- HOME ---------------------------------------------------------------
+  if(screen==="home")return(<Shell>
+    <div style={{flex:1,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",gap:30,padding:"6vh 0"}}>
+      <div style={{textAlign:"center"}}>
+        <div style={{fontFamily:F.display,fontWeight:700,fontSize:"clamp(52px,13vw,88px)",letterSpacing:-2.5,lineHeight:1}}>Chalk</div>
+        <div style={{...label,marginTop:12,letterSpacing:4}}>Run the table</div></div>
+      <div style={{width:"min(320px,100%)",display:"grid",gap:9}}>
+        <button onClick={()=>setScreen("table")} style={{...btnPrimary,padding:"16px",fontSize:15}}>Play</button>
+        <button onClick={()=>setScreen("lab")} style={{...btn,padding:"13px",borderColor:C.accentDim}}>Effect Lab</button>
+        <button onClick={()=>setScreen("rules")} style={{...btn,padding:"13px"}}>How to play</button>
+        <button disabled style={{...btn,padding:"13px",opacity:.35,cursor:"default"}}>Online</button>
+      </div></div></Shell>);
+
+  if(screen==="lab")return <EffectLab onBack={()=>setScreen("home")} cloth={cloth}/>;
+
+  if(screen==="king"){
+    const q=king.challenge,tier=BOTS.reduce((a,b)=>Math.abs(b.rating-q.rating)<Math.abs(a.rating-q.rating)?b:a,BOTS[0]);
+    const single=18+Math.round(q.rating/48)+king.streak*2,series=single*2+32+Math.round(q.rating/18);
+    return(<Shell wide><Head onBack={()=>setScreen("setup")} title="King of the Table"/>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:14}}>
+        {[["WIN STREAK",king.streak,"#efc486"],["BANK",`$${king.bank}`,C.good],["BUZZ",Math.round(king.buzz),king.buzz>=85?C.warn:C.accent]].map(([k,v,c])=><div key={k} style={{...panel,padding:"14px 16px"}}>
+          <div style={{...label,fontSize:9}}>{k}</div><div style={{fontFamily:F.display,fontSize:28,fontWeight:700,color:c,marginTop:3}}>{v}</div></div>)}
+      </div>
+      {king.last&&<div style={{padding:"9px 12px",borderRadius:9,background:"rgba(106,168,138,.09)",border:`1px solid ${C.line}`,fontSize:12,color:C.ink2,marginBottom:12}}>{king.last}</div>}
+      {king.insurance?<div style={{...panel,padding:18,borderColor:C.warn,background:"rgba(201,138,75,.08)"}}>
+        <div style={{...label,color:C.warn}}>Five-win insurance</div>
+        <h2 style={{fontFamily:F.display,margin:"7px 0 6px",fontSize:24}}>Run it back. Best of three.</h2>
+        <p style={{fontSize:13,color:C.ink2,lineHeight:1.55,maxWidth:650,margin:"0 0 14px"}}>Beat {king.insurance.name} in a series and the streak survives. Lose it and the crown resets—but your bank never disappears.</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={()=>launchKing(2,king.insurance,true)} style={btnPrimary}>Use insurance · BO3</button>
+          <button onClick={()=>setKing(k=>({...k,streak:0,insurance:null,challenge:makeKingChallenge(0),last:"Loss accepted. New run, same bank."}))} style={btnGhost}>Accept the loss</button>
+        </div>
+      </div>:<div style={{...panel,padding:18,borderColor:"rgba(201,138,75,.38)"}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:14,flexWrap:"wrap"}}>
+          <span style={{width:48,height:48,borderRadius:14,background:charOf(q.char).color,display:"grid",placeItems:"center",fontFamily:F.display,fontWeight:800,fontSize:20,color:"#111"}}>{charOf(q.char).name[0]}</span>
+          <div style={{flex:"1 1 300px"}}><div style={{...label,color:C.warn}}>Next challenger</div>
+            <h2 style={{fontFamily:F.display,margin:"4px 0 3px",fontSize:"clamp(22px,4vw,32px)"}}>{q.name}</h2>
+            <div style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>{q.rating} RATING · {tier.label.toUpperCase()} · {TABLES[q.tid].name.toUpperCase()}</div></div>
+          {q.team&&<span style={{fontFamily:F.mono,fontSize:10,padding:"6px 9px",borderRadius:7,border:`1px solid ${C.warn}`,color:C.warn}}>2 × 2 NIGHT</span>}
+        </div>
+        <div style={{margin:"15px 0",height:1,background:C.line}}/>
+        <div style={{display:"grid",gridTemplateColumns:"minmax(180px,260px) 1fr",gap:18,alignItems:"center"}}>
+          <TableArt tid={q.tid} cloth={cloth}/>
+          <div><div style={{fontSize:13,color:C.ink2,lineHeight:1.55}}>{q.team?"You get a house partner. Their side gets one too; sides rotate cleanly every shot.":"One rack, heads-up. Take the quick money or stretch it into a series."}</div>
+            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.5,marginTop:7}}>Between every rack your Buzz drops by exactly 35%. Your cash bank and streak carry forward.</div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:14}}>
+              <button onClick={()=>launchKing(1)} style={btnPrimary}>Play one rack · up to ${single}</button>
+              <button onClick={()=>launchKing(2)} style={{...btn,borderColor:C.warn,color:"#efc486"}}>Best of three · up to ${series}</button>
+            </div></div>
+        </div>
+      </div>}
+      <div style={{...panel,padding:"12px 14px",marginTop:12,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+        <span style={{...label,fontSize:9}}>Your player</span>
+        <Select id="kingchar" value={seats[0].char} width={150} onPick={v=>upd(0,{char:v})}
+          options={CHAR_IDS.map(c=>({v:c,label:CHARS[c].name,sub:CHARS[c].move.name,dot:CHARS[c].color}))}/>
+        <span style={{...label,fontSize:9,marginLeft:8}}>Cloth</span><ClothPicker/>
+      </div>
+    </Shell>);}
+
+  if(screen==="kingGame"){
+    const q=king.challenge,ally=CHAR_IDS.find(c=>c!==seats[0].char&&c!==q.char)||CHAR_IDS[0];
+    const ks=q.team?
+      [{kind:"human",char:seats[0].char,team:1},{kind:"cpu",char:q.char,rating:q.rating,team:2},{kind:"cpu",char:ally,rating:Math.max(350,q.rating-55),team:1},{kind:"cpu",char:CHAR_IDS.find(c=>c!==q.char&&c!==ally)||CHAR_IDS[1],rating:Math.max(350,q.rating-25),team:2}]:
+      [{kind:"human",char:seats[0].char,team:1},{kind:"cpu",char:q.char,rating:q.rating,team:2}];
+    return <Game key={kingKey} tid={q.tid} cloth={cloth} count={q.team?4:2} mode="eight" seats={ks}
+      opts={{balls:true,specials:true,bar:true}} powerSet={q.powerSet} initialBuzz={king.buzz} initialCash={START_CASH}
+      campaign={{challenger:q.name,rating:q.rating,us:king.series.us,them:king.series.them,target:king.series.target,bank:king.bank}}
+      onResult={onKingResult} onSetup={()=>setScreen("king")} onQuit={()=>setScreen("king")}/>;
+  }
+
+  // ---- RULES --------------------------------------------------------------
+  if(screen==="rules"){
+    const H=({children})=><div style={{fontFamily:F.display,fontSize:15,fontWeight:600,margin:"22px 0 9px"}}>{children}</div>;
+    const R=({k,v,c})=><div style={{display:"grid",gridTemplateColumns:"128px 1fr",gap:12,marginBottom:7,fontSize:13,alignItems:"baseline"}}>
+      <b style={{color:c||C.ink,fontWeight:600}}>{k}</b><span style={{color:C.ink2,lineHeight:1.55}}>{v}</span></div>;
+    return(<Shell wide><Head onBack={()=>setScreen("home")} title="How to play"/>
+      <p style={{color:C.ink2,fontSize:13.5,lineHeight:1.65,margin:0,maxWidth:640}}>
+        Drag anywhere on the cloth to aim — the further from the cue ball you drag, the finer the control.
+        Then drag the power bar under the table and let go to shoot. The white line shows first contact; the blue
+        line shows where the struck ball sets off.</p>
+      <H>Game types</H>
+      {MODE_IDS.map(m=><R key={m} k={MODES[m].name} v={m==="king"?`Solo campaign — ${MODES[m].blurb}`:`${MODES[m].seats.join(" or ")} players — ${MODES[m].blurb}`}/>)}
+      <H>8-Ball</H>
+      <R k="Groups" v="The table is open until someone legally pockets a solid or a stripe. That group is theirs, and their side's."/>
+      <R k="Fouls" v="Scratch, hitting nothing, hitting the wrong group first, or failing to reach a cushion after contact. Every one of them is ball in hand anywhere."/>
+      <R k="The eight" v="Once your group is cleared you're on the eight, and you have to call the pocket first. Make it there and the rack is yours. Sink it early, sink it anywhere else, or foul while making it, and you lose on the spot."/>
+      <R k="The break" v="Eight on the break is not a loss — it goes straight back up on the foot spot."/>
+      <H>Cutthroat</H>
+      <R k="Groups" v="Two players take solids and stripes with the eight left neutral; three take five each; four take three each with 13, 14 and 15 neutral. Each ball wears a ring in its owner's colour."/>
+      <R k="Shooting" v="You pot other people's balls, never your own. Sink one of yours and it stays down — that's punishment enough. Turn continues only if you pocketed an opponent's."/>
+      <R k="Neutral balls" v="Pocketing one is a foul. It goes back on the foot spot and your turn ends."/>
+      <R k="Scratch" v="Every opponent gets one of their pocketed balls spotted back, and the next player shoots with ball in hand. Someone with no balls left is skipped, not eliminated — a scratch can put them right back in it."/>
+      <H>Tables</H>
+      {TABLE_IDS.map(t=><R key={t} k={TABLES[t].name} v={`${TABLES[t].tag} — ${TABLES[t].blurb}`}/>)}
+      <H>Stats</H>
+      <p style={{color:C.ink2,fontSize:13,lineHeight:1.6,margin:"0 0 10px",maxWidth:640}}>
+        Six stats, and each one gates something different, so being good at one never covers being bad at another.
+        Nobody has all six.</p>
+      <R k="Power" v="Your top cue speed. Low power can still pot anything on the table, it just can't break properly or send the cue ball three rails for position."/>
+      <R k="Stroke" v="How closely the ball leaves on the line you aimed. This is the one that decides whether you make the shot you lined up."/>
+      <R k="Touch" v="How closely the delivered speed matches the speed you set. You can be dead straight and still lose the table by arriving too hard."/>
+      <R k="English" v="How far off centre you're allowed to strike. The dashed ring on the tip control is your ceiling — draw, follow and side all live inside it."/>
+      <R k="Curve" v="How high you may raise the butt of the cue. Elevation plus side spin is what bends a ball, so this is the stat that gets you round a post."/>
+      <R k="Eye" v="How much of the shot you're shown before you play it: one, two or three cushions ahead, whether you see where the object ball goes, and whether you see where the cue ball finishes."/>
+      <H>Characters</H>
+      <p style={{color:C.ink2,fontSize:13,lineHeight:1.6,margin:"0 0 10px",maxWidth:640}}>
+        Fargo is the strongest all round and still can't bend a ball, which is the whole reason Pillars and Gates are
+        on the table list. Specials are chosen now and go live in the next build.</p>
+      {CHAR_IDS.map(c=><R key={c} c={CHARS[c].color} k={CHARS[c].name}
+        v={`${CHARS[c].move.name} (${CHARS[c].move.tag}) — ${CHARS[c].move.text}`}/>)}
+      <H>Power Ball sets</H>
+      {POWER_SET_IDS.map(k=><R key={k} k={POWER_SETS[k].name} v={`${POWER_SETS[k].blurb} ${POWER_SETS[k].trigger}.`}/>) }
+    </Shell>);}
+
+  // ---- TABLE PICKER -------------------------------------------------------
+  if(screen==="table")return(<Shell>
+    <Head onBack={()=>setScreen("home")} title="Pick a table"/>
+    <div className="table-grid">
+      {TABLE_IDS.map(t=>{const on=tid===t;
+        return(<button key={t} onClick={()=>setTid(t)} style={{...panel,padding:11,cursor:"pointer",textAlign:"center",
+          border:on?`1px solid ${C.accentDim}`:`1px solid ${C.line}`,background:on?C.panel2:C.panel,
+          boxShadow:on?"0 0 0 1px rgba(127,166,196,.18)":"none"}}>
+          <TableArt tid={t} cloth={PREVIEW_CLOTH}/>
+          <div style={{fontFamily:F.display,fontWeight:600,fontSize:14,marginTop:8,color:C.ink}}>{TABLES[t].name}</div>
+          <div style={{fontFamily:F.mono,fontSize:10.5,color:C.muted,marginTop:2}}>{TABLES[t].tag}</div>
+        </button>);})}
+    </div>
+    <div style={{marginTop:14,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+      <button onClick={()=>setScreen("rules")} style={{...btnGhost,fontSize:12}}>Table rules</button>
+      <button onClick={()=>setScreen("setup")} style={{...btnPrimary,padding:"11px 20px"}}>Players →</button></div>
+  </Shell>);
+
+  // ---- SETUP --------------------------------------------------------------
+  if(screen==="setup"){const legal=modesFor(count);
+    return(<Shell><Head onBack={()=>setScreen("table")} title={`Setup · ${TABLES[tid].name}`}/>
+      {mode!=="king"&&<div style={{display:"flex",gap:8,marginBottom:14}}>{[2,3,4].map(n=>
+        <button key={n} onClick={()=>setCount(n)} style={count===n?segOn:seg}>{n} players</button>)}</div>
+      }
+      <div style={{display:"grid",gap:12}}>
+        <div style={{...panel,padding:"14px 16px"}}>
+          <div style={{...label,marginBottom:9}}>Table cloth</div>
+          <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap"}}>
+            <div style={{width:230,maxWidth:"100%",flexShrink:0}}><TableArt tid={tid} cloth={cloth}/></div>
+            <div style={{flex:"1 1 260px",minWidth:0}}>
+              <ClothPicker/>
+              <div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:9}}>Select a swatch to preview the full cloth on {TABLES[tid].name}.</div>
+            </div>
+          </div>
+          <div style={{height:1,background:C.line,margin:"14px 0"}}/>
+
+          <div style={label}>Game mode</div>
+          <div style={{display:"flex",gap:7,marginTop:8,flexWrap:"wrap"}}>{legal.map(m=>
+            <button key={m} onClick={()=>setMode(m)} style={mode===m?segOn:seg}>{MODES[m].name}</button>)}
+            <button disabled style={{...seg,opacity:.35,cursor:"default"}}>Tournament · soon</button></div>
+          <div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:8}}>{MODES[mode].blurb}</div>
+          {mode==="cutthroat"&&(()=>{const N=(TABLES[tid].build().racks||1)*15;
+            const per=count===2?Math.floor(N/2)-(N/15):Math.floor(N/count), spare=N-per*count;
+            return <div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:5}}>
+              {per} balls each{spare?`, ${spare} neutral — pocket one of those and it goes straight back up`:", nothing spare"}.</div>;})()}
+          {mode==="eight"&&count>2&&(()=>{const a=seats.slice(0,count).filter(x=>(x.team||1)===1).length;
+            return <div style={{fontSize:11.5,color:a===0||a===count?C.warn:C.muted,lineHeight:1.45,marginTop:5}}>
+              {a===0||a===count?"Put at least one player on each side.":`${a} v ${count-a}. Sides alternate every shot, so a lone player still shoots every other turn.`}</div>;})()}
+
+          <div style={{height:1,background:C.line,margin:"14px 0"}}/>
+          {mode==="king"?<div style={{padding:"11px 12px",borderRadius:10,background:"rgba(201,138,75,.08)",border:`1px solid rgba(201,138,75,.35)`}}>
+            <div style={{fontFamily:F.mono,fontSize:9.5,color:C.warn}}>SOLO CAMPAIGN · EVERYTHING ENABLED</div>
+            <div style={{fontSize:11.5,color:C.ink2,lineHeight:1.5,marginTop:5}}>Your selected cloth carries into the run and {TABLES[tid].name} hosts the opening challenge. Later challengers bring their own tables, Power Ball sets, stakes, and occasional 2v2 partners.</div>
+          </div>:<>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+            <div style={label}>Game options</div>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>setOpts({balls:false,specials:false,bar:false})} style={{...btnGhost,padding:"6px 11px",fontSize:11}}>Pure</button>
+              <button onClick={()=>setOpts({balls:true,specials:true,bar:true})} style={{...btnGhost,padding:"6px 11px",fontSize:11}}>Everything</button>
+            </div></div>
+          <div style={{display:"flex",gap:7,marginTop:10,flexWrap:"wrap"}}>
+            {[["balls","Power balls"],["specials","Specials"],["bar","The bar"]].map(([k,l])=>
+              <button key={k} onClick={()=>setOpts(o=>({...o,[k]:!o[k]}))} style={opts[k]?segOn:seg}>{opts[k]?"✓ ":""}{l}</button>)}</div>
+          {opts.balls&&<div style={{marginTop:11,padding:"11px 12px",borderRadius:10,background:"rgba(127,166,196,.07)",border:`1px solid ${C.line}`}}>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{...label,fontSize:9}}>Match-wide set</span>
+              <Select id="powerset" value={powerSet} width={168} onPick={setPowerSet}
+                options={POWER_SET_IDS.map(k=>({v:k,label:POWER_SETS[k].name,sub:POWER_SETS[k].tag,dot:POWER_SETS[k].color}))}/>
+              <span style={{fontFamily:F.mono,fontSize:9.5,color:POWER_SETS[powerSet].color}}>{POWER_SETS[powerSet].trigger.toUpperCase()}</span>
+            </div>
+            <div style={{fontSize:11.5,color:C.ink2,lineHeight:1.5,marginTop:7}}>{POWER_SETS[powerSet].blurb}</div>
+          </div>}
+          {opts.bar&&<div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:8}}>
+            Everyone starts on a ${START_CASH} tab. Drinks buy you stats or bend the rules; you can also spend it on
+            the player opposite. When the tab is gone it is gone.</div>}
+          </>}
+        </div>
+
+        {Array.from({length:mode==="king"?1:count}).map((_,i)=>{const s=seats[i],ch=charOf(s.char);
+          return(<div key={i} style={{...panel,padding:"12px 14px"}}>
+            <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{width:22,height:22,borderRadius:6,background:ch.color,flexShrink:0}}/>
+              <b style={{fontFamily:F.mono,fontSize:11,minWidth:48}}>SEAT {i+1}</b>
+              {mode!=="king"&&<Select id={i+"k"} value={s.kind} width={104} onPick={v=>upd(i,{kind:v})}
+                options={[{v:"human",label:"You"},{v:"cpu",label:"Computer"}]}/>
+              }
+              <Select id={i+"c"} value={s.char} width={132} onPick={v=>upd(i,{char:v})}
+                options={CHAR_IDS.map(c=>({v:c,label:CHARS[c].name,sub:CHARS[c].move.name,dot:CHARS[c].color}))}/>
+              {mode!=="king"&&s.kind==="cpu"&&<Select id={i+"r"} value={s.rating} width={150} onPick={v=>upd(i,{rating:v})}
+                options={BOTS.map(b=>({v:b.rating,label:b.label,sub:b.rating+" rating"}))}/>}
+              {mode==="eight"&&count>2&&<Select id={i+"t"} value={s.team||1} width={100} onPick={v=>upd(i,{team:v})}
+                options={[{v:1,label:"Side 1"},{v:2,label:"Side 2"}]}/>}
+            </div>
+            <div style={{display:"flex",gap:"7px 16px",flexWrap:"wrap",marginTop:10}}>
+              {STATS.map(([k,l])=><span key={k} style={{display:"inline-flex",gap:6,alignItems:"center"}}>
+                <span style={{...label,fontSize:8,letterSpacing:.9}}>{l}</span><Bars v={ch[k]} color={ch.color}/></span>)}</div>
+            {(mode==="king"||opts.specials)&&<div style={{fontSize:11.5,color:C.muted,lineHeight:1.45,marginTop:8}}>
+              <b style={{color:ch.color,fontWeight:600}}>{ch.move.name}</b>
+              <span style={{fontFamily:F.mono,fontSize:10,color:ch.move.kind==="passive"?C.good:C.warn}}> · {ch.move.tag}</span> — {ch.move.text}</div>}
+          </div>);})}
+      </div>
+      <button onClick={()=>{if(mode==="king"){setKing(k=>({...k,challenge:{...k.challenge,tid}}));setScreen("king");}else setScreen("game");}}
+        style={{...btnPrimary,marginTop:18}}>{mode==="king"?"Enter King of the Table →":"Break →"}</button>
+    </Shell>);}
+
+  return <Game tid={tid} cloth={cloth} count={count} mode={mode} seats={seats} opts={opts} powerSet={powerSet}
+    onSetup={()=>setScreen("setup")} onQuit={()=>setScreen("home")}/>;
+}
+
+// ===== 9. GAME ===============================================================
+// Two rulesets share one shot loop. What differs is only: who owns which balls,
+// what counts as a foul, what a foul costs, and how the turn passes.
+function Game({tid,cloth,count,mode,seats,opts,powerSet,onSetup,onQuit,onResult,initialBuzz=0,initialCash=START_CASH,campaign}){
+  const g=useMemo(()=>TABLES[tid].build(),[tid]);
+  const racks=g.racks||1, TOTAL=racks*15;
+  const pk=useMemo(()=>makePockets(g),[g]);
+  const ballsRef=useRef(buildRack(g,racks,opts.balls?powerSet:null));
+  const [,force]=useState(0);
+  const redraw=useCallback(()=>force(v=>v+1),[]);
+  const bs=ballsRef.current;
+  const cue=bs.find(b=>b.n===0);
+
+  // 8-ball sides. Seat teams come from setup; two seats is always 1 v 1.
+  const teams=useMemo(()=>{
+    if(mode!=="eight")return null;
+    const a=[],b=[];
+    for(let i=0;i<count;i++)((seats[i].team===2)?b:a).push(i);
+    if(!a.length||!b.length){a.length=0;b.length=0;
+      for(let i=0;i<count;i++)(i%2?b:a).push(i);}
+    return [a,b];
+  },[mode,count,seats]);
+  // Cutthroat ownership, fixed for the whole game.
+  const own=useMemo(()=>mode==="cutthroat"?assignOwners(TOTAL,count):null,[mode,TOTAL,count]);
+
+  // ---- turn state ----------------------------------------------------------
+  const [ply,setPly]=useState(0);        // 8-ball: alternates sides, so 1 v 2 is fair
+  const [seatTurn,setSeatTurn]=useState(0);
+  const [angle,setAngle]=useState(Math.PI);
+  const [power,setPower]=useState(0.42);   // committed shot power, 0..1 — persists
+  const grab=useRef(0);                    // power at the moment you took hold
+  const [tip,setTip]=useState({a:0,b:0});  // where the tip strikes the cue ball
+  const [elev,setElev]=useState(0);        // how far the butt is raised, radians
+  const [moving,setMoving]=useState(false);
+  const [side,setSide]=useState(null);   // 8-ball: {0:"solid"|"stripe",1:...}
+  const [called,setCalled]=useState(null);
+  const [msg,setMsg]=useState("Break.");
+  const [over,setOver]=useState(null);   // winning seat
+  const [inHand,setInHand]=useState(false);
+  const [shotNo,setShotNo]=useState(0);
+  const [spent,setSpent]=useState({});     // special uses burned, per seat
+  const [armed,setArmed]=useState(false);  // active special primed for this shot
+  // ---- the bar -------------------------------------------------------------
+  const [buzz,setBuzz]=useState(()=>initialBuzz?{0:initialBuzz}:{});       // per seat, 0-120
+  const [fx,setFx]=useState({});           // per seat, [{id, shots}]
+  const [cash,setCash]=useState(()=>({0:initialCash}));       // your tab. when it's gone, it's gone
+  const [sending,setSending]=useState(false);
+  const [barOpen,setBarOpen]=useState(false);   // the bar is a popup, not a scroll
+  const [bought,setBought]=useState(-1);   // which ply the current purchase was made on
+  const [pending,setPending]=useState({});  // per seat: skipTurn / echo / overdrive
+  const [tilt,setTilt]=useState(0);
+  const [missStreak,setMissStreak]=useState(0);
+  const [magnetSurge,setMagnetSurge]=useState(false);
+  const [powerPulse,setPowerPulse]=useState("");
+  const reported=useRef(false);
+  const raf=useRef(0), drag=useRef(null), snap=useRef(null);
+
+  function sideOf(seat){return teams&&teams[0].includes(seat)?0:1;}
+
+  // Base sheet + every live drink + whatever band the buzz meter is in.
+  const effOf=useCallback(seat=>{
+    const ch=charOf(seats[seat].char), b=buzz[seat]||0, list=fx[seat]||[];
+    const st={}; STAT_KEYS.forEach(k=>st[k]=ch[k]);
+    const flags={};
+    for(const e of list){const d=DRINKS[e.key]||SPIKES[e.key]; if(!d)continue;
+      for(const k in (d.stats||{}))st[k]+=d.stats[k];
+      Object.assign(flags,d.flags||{});}
+    const band=bandOf(b), bf=BAND_FX[band];
+    if(bf){ for(const k in (bf.stats||{}))st[k]+=bf.stats[k]; Object.assign(flags,bf.flags||{}); }
+    return{ch,st,flags,band,buzz:b};
+  },[seats,buzz,fx]);
+  // How many balls this seat still has to pot. In cutthroat that is their own
+  // group; in 8-ball it is their side's group, or seven while the table is open.
+  const upCount=seat=>mode==="cutthroat"
+    ? bs.filter(b=>!b.in&&b.n!==0&&own[b.n]===seat).length
+    : (()=>{const gp=side&&side[sideOf(seat)]; if(!gp)return 7*racks;
+        return bs.filter(b=>!b.in&&b.n!==0&&groupOf(b.n)===gp).length;})();
+
+  // Whose shot is it? 8-ball alternates sides then rotates within the side, so
+  // the lone player in a 1 v 2 game still shoots every other turn.
+  const shooterAt=useCallback(p=>{
+    if(mode!=="eight")return seatTurn;
+    const sd=p%2, list=teams[sd];
+    return list[Math.floor(p/2)%list.length];
+  },[mode,teams,seatTurn]);
+  const turn=mode==="eight"?shooterAt(ply):seatTurn;
+  const alive=i=>mode!=="cutthroat"||upCount(i)>0;
+
+  const onEight=(()=>{ if(mode!=="eight"||!side)return false;
+    const gp=side[sideOf(turn)];
+    return bs.filter(b=>!b.in&&b.n!==0&&groupOf(b.n)===gp).length===0;})();
+
+  const legalFor=useCallback(t=>{
+    if(mode==="cutthroat")return n=>own[n]!==t&&own[n]!==-1; // not yours, not neutral
+    const gp=side&&side[sideOf(t)];
+    if(!gp)return n=>groupOf(n)!=="eight";                 // table still open
+    const left=bs.filter(b=>!b.in&&b.n!==0&&groupOf(b.n)===gp).length;
+    return left?(n=>groupOf(n)===gp):(n=>groupOf(n)==="eight");
+  },[mode,side,own,bs,teams]);
+
+  const nextSeat=t=>{let n=t;
+    for(let i=0;i<count*2;i++){n=(n+1)%count;
+      if(!alive(n))continue;
+      if((pending[n]||{}).skip){setPending(x=>({...x,[n]:{...(x[n]||{}),skip:0}}));continue;}
+      return n;}
+    return t;};
+  const passTurn=()=>{ if(mode==="eight")setPly(p=>p+1); else setSeatTurn(t=>nextSeat(t)); };
+
+
+
+  // ---- the shot -------------------------------------------------------------
+  const resolveRef=useRef(null);
+  const shoot=useCallback((a,speed,tp,el)=>{
+    if(moving||over!=null||!cue||cue.in)return;
+    const e0=effOf(turn), ch=e0.ch, k=kit(e0.st,e0.flags), mv=ch.move, FL=e0.flags;
+    const P=passiveOf(ch);
+    const breaking=bs.filter(b=>!b.in&&b.n!==0).length===TOTAL;
+    // passives that are simply always true of this player
+    RULE.noSquirt=P.noSquirt; RULE.spinHold=P.spinHold;
+    RULE.fastCloth=!!FL.fastCloth;            // vodka: the cloth runs
+    RULE.phase=!!FL.phase||(opts.balls&&powerSet==="haunted"&&missStreak>=3); RULE.phaseBall=null;   // acid / Haunted séance
+    RULE.pocketBoost=FL.khole?1.9:1;          // ketamine: the pockets open up
+    RULE.magnetBoost=magnetSurge?2.6:1.7;
+    RULE.softJaws=!!FL.khole;                 // and stop them spitting balls back
+    RULE.tilt=tilt;                           // jager: the slate leans
+    RULE.deadRail=armed&&mv.name==="Dead Rail";
+    RULE.stunCue =armed&&mv.name==="Perch";
+    // La Recta: a near-straight shot leaves with nothing on it
+    const pv=predictPath(cue,a,speed,tp,el,bs,g,1);
+    const straight=P.perfectStraight&&pv.ball&&pv.cut>0.985;
+    const clean=straight||(armed&&mv.name==="Every Route")||!!FL.steady;
+    let aErr=clean?0:(Math.random()*2-1)*k.aimErr;
+    if(FL.shaky)aErr+=(Math.random()*2-1)*0.004;      // over the line: hands go
+    let tpUse=FL.noTip?{a:0,b:0}:(tp||{a:0,b:0});
+    if(FL.randomTip){                                  // tequila: it is not up to you
+      const m=k.maxTip; tpUse={a:(Math.random()*2-1)*m,b:(Math.random()*2-1)*m};}
+    if(FL.miscue&&Math.hypot(tpUse.a,tpUse.b)>k.maxTip*0.78){
+      aErr+=(Math.random()*2-1)*0.05; speed*=0.55;}    // struck it too far out
+    const sErr=1+(Math.random()*2-1)*k.speedErr;
+    // Wrecking Ball: the break ignores the ceiling entirely. Cut Off must set
+    // the committed speed before `sp` is calculated; the old order randomized
+    // the direction but accidentally kept the player's carefully chosen pace.
+    if(FL.cutOff){a=Math.random()*Math.PI*2; speed=MAXV*(0.06+Math.random()*0.10); tpUse={a:0,b:0};}
+    const sp=(P.freeBreak&&breaking)?MAXV*1.2:speed*sErr;
+    strike(cue,a+aErr,Math.max(12,sp),tpUse,el||0);
+    if(opts.balls&&powerSet==="haunted"&&missStreak>=3){setMissStreak(0);setPowerPulse("SÉANCE SHOT · the cue ball ignored first contact");}
+    if(magnetSurge)setMagnetSurge(false);
+    setFx(f=>({...f,[turn]:(f[turn]||[]).map(e=>({...e,shots:e.shots-1})).filter(e=>e.shots>0)}));
+    setBuzz(b=>({...b,[turn]:Math.max(0,(b[turn]||0)+buzzShift(-7,ch.tol))}));
+    if(armed){setSpent(x=>({...x,[turn]:(x[turn]||0)+1}));setArmed(false);}
+    const before=bs.filter(b=>b.in).map(b=>b.n);
+    snap.current=bs.map(b=>({n:b.n,x:b.x,y:b.y,in:b.in}));
+    const ev={first:null,rail:false};
+    setMoving(true); setMsg("");
+    let last=performance.now();
+    const loop=now=>{
+      const dt=Math.min(.04,(now-last)/1000); last=now;
+      advance(bs,g,dt,ev);
+      redraw();
+      if(asleep(bs)){setMoving(false); resolveRef.current(before,ev); return;}
+      raf.current=requestAnimationFrame(loop);};
+    raf.current=requestAnimationFrame(loop);
+  },[moving,over,cue,bs,g,redraw,seats,turn,armed,TOTAL,effOf,tilt,pending,opts.balls,powerSet,missStreak,magnetSurge]);
+
+  // ---- turn resolution ------------------------------------------------------
+  resolveRef.current=(before,ev)=>{
+    const sunk=bs.filter(b=>b.in&&b.n!==0&&!before.includes(b.n));
+    const scratch=cue.in;
+    const isBreak=shotNo===0;
+    setShotNo(n=>n+1);
+    let keep=false, note="", win=null, lose=false;
+    if(opts.balls){
+      if(ev.power){note=ev.power;setPowerPulse(ev.power);}
+      if(sunk.length)setMissStreak(0);else setMissStreak(n=>n+1);
+      if(powerSet==="gravity"&&sunk.length>=2){setMagnetSurge(true);setPowerPulse("MAGNET SURGE · every Magnet widens next turn");}
+      if(powerSet==="roulette"&&(shotNo+1)%4===0){
+        const deck=BALL_IDS.filter(x=>x!=="none"),live=bs.filter(b=>!b.in&&b.power);
+        live.forEach((b,i)=>{b.power=deck[(Math.floor(Math.random()*deck.length)+i)%deck.length];b.ghostSpent=false;});
+        setPowerPulse("HOUSE REDRAW · every live Power Ball changed");redraw();}
+    }
+
+    if(mode==="cutthroat"){
+      const neutral=sunk.filter(b=>own[b.n]===-1&&b.power!=="wild"&&b.power!=="steal");
+      const theirs=sunk.filter(b=>b.power==="wild"||b.power==="steal"||(own[b.n]!==turn&&own[b.n]!==-1)).length;
+      neutral.forEach(b=>spotBall(b,bs,g));            // neutral balls never stay down
+      if(scratch){
+        // every opponent lifts one of their own balls back onto the foot spot
+        let back=0;
+        for(let i=0;i<count;i++){ if(i===turn)continue;
+          const down=bs.filter(b=>b.in&&b.n!==0&&own[b.n]===i);
+          if(down.length){spotBall(down[down.length-1],bs,g);back++;}}
+        note=back?`Scratch. ${back===1?"An opponent gets":"Opponents each get"} a ball back, and ball in hand.`
+                 :"Scratch. Nobody had a ball to get back — ball in hand.";
+      } else if(neutral.length) note="Neutral ball down. It goes straight back up.";
+      else if(!sunk.length)     note="Nothing down.";
+      else if(!theirs)          note="That was your own. Turn over.";
+      else                      note="Good. Shoot again.";
+      keep=theirs>0&&!scratch&&!neutral.length;
+      const standing=[];for(let i=0;i<count;i++)if(upCount(i)>0)standing.push(i);
+      if(standing.length===1)win=standing[0];
+      else if(standing.length===0)win=turn;
+    } else {
+      const mySide=sideOf(turn);
+      const eights=sunk.filter(b=>groupOf(b.n)==="eight");
+      // group assignment on the first legal pot
+      let sd=side;
+      if(!sd&&!scratch){
+        const first=sunk.find(b=>groupOf(b.n)!=="eight"&&b.power!=="wild"&&b.power!=="steal");
+        if(first){const mineG=groupOf(first.n);
+          sd={[mySide]:mineG,[1-mySide]:mineG==="solid"?"stripe":"solid"};
+          setSide(sd); note=`${mineG==="solid"?"Solids":"Stripes"} are yours.`;}}
+      const gp=sd&&sd[mySide];
+      const wasOnEight=onEight;
+      const mine=gp?sunk.filter(b=>groupOf(b.n)===gp||b.power==="wild"||b.power==="steal").length
+                   :sunk.filter(b=>b.power==="wild"||b.power==="steal").length;
+      const noHit=ev.first==null;
+      const wrongFirst=!noHit&&!legalFor(turn)(ev.first);
+      const noRail=!noHit&&!ev.rail&&sunk.length===0;
+      const foul=scratch||noHit||wrongFirst||noRail;
+
+      if(eights.length){
+        if(isBreak){ eights.forEach(b=>spotBall(b,bs,g)); note="Eight on the break. It goes back up."; }
+        else if(!wasOnEight)                       lose=true;
+        else if(foul)                              lose=true;
+        else if(eights.some(b=>b.pocket!==called)) lose=true;
+        else if(bs.filter(b=>!b.in&&groupOf(b.n)==="eight").length===0) win=turn;
+        else {keep=true; note="One eight down. Call the next.";}
+      }
+      if(!lose&&win==null&&!eights.length){
+        if(scratch)          note="Scratch. Ball in hand.";
+        else if(noHit)       note="You hit nothing. Ball in hand.";
+        else if(wrongFirst)  note="Wrong ball first. Ball in hand.";
+        else if(noRail)      note="No rail after contact. Ball in hand.";
+        else if(!sunk.length)note="Nothing down.";
+        else if(!note)       note=mine>0?"Good. Shoot again.":"That wasn't yours.";
+        keep=!foul&&mine>0;
+      }
+      if(foul&&!lose&&win==null)setInHand(true);
+      setCalled(null);
+    }
+
+    if(mode==="cutthroat"&&scratch)setInHand(true);
+    if(scratch){const cs=g.cueSpot||[g.w*0.24,g.h/2];cue.in=false;cue.pocket=undefined;cue.vx=cue.vy=0;cue.x=cs[0];cue.y=cs[1];
+      if(E.flags.noHand)setInHand(false);}   // nailed feet: no ball in hand
+
+    if(lose){const w=mode==="eight"?teams[1-sideOf(turn)][0]:nextSeat(turn);
+      setOver(w); setMsg("The eight went down early. Rack over."); redraw(); return;}
+    if(win!=null){setOver(win); setMsg(""); redraw(); return;}
+    const pd=pending[turn]||{};
+    // Sour the pot — anything they sank spits one of their old ones back up
+    if(E.flags.feedback&&sunk.length){
+      const back=bs.filter(b=>b.in&&b.n!==0&&!sunk.includes(b));
+      if(back.length){spotBall(back[back.length-1],bs,g); note+=" One of yours came back up.";}}
+    // Peyote — the table snaps back, but the pots stand
+    if(pd.echo&&snap.current){
+      for(const q of snap.current){const b=bs.find(x=>x.n===q.n); if(!b||b.in)continue; b.x=q.x;b.y=q.y;b.vx=b.vy=b.wx=b.wy=b.wz=0;}
+      setPending(x=>({...x,[turn]:{...pd,echo:0}}));
+      setMsg("You have been here before. Shoot it again."); redraw(); return;}
+    // Adderall — a second shot now, and your next turn is gone
+    if(pd.over){ setPending(x=>({...x,[turn]:{over:0,skip:1}}));
+      setMsg("Again. Then you're done."); redraw(); return;}
+    setMsg(note);
+    if(!keep)passTurn();
+    redraw();
+  };
+
+  // Whose hands are on the cue, and what their sheet looks like right now once
+  // drinks and buzz have been applied.
+  const human=seats[turn]&&seats[turn].kind==="human";
+  const E=effOf(turn), me=E.ch, K=kit(E.st,E.flags);
+  useEffect(()=>{
+    if(over==null||!onResult||reported.current)return;
+    reported.current=true;
+    const hi=seats.findIndex(s=>s.kind==="human");
+    const humanWin=mode==="eight"&&count>2?sideOf(over)===sideOf(hi):over===hi;
+    const t=setTimeout(()=>onResult({winner:over,humanWin,buzz:buzz[hi]||0,cash:cash[hi]==null?initialCash:cash[hi],shots:shotNo}),1050);
+    return()=>clearTimeout(t);
+  },[over]);
+
+  // Take something. Free, but it happens on your turn and everyone can see it.
+  const money=i=>cash[i]==null?(i===0?initialCash:START_CASH):cash[i];
+  const applyItem=(seat,d)=>{
+    const ch=charOf(seats[seat].char);
+    setBuzz(b=>({...b,[seat]:Math.max(0,Math.min(120,(b[seat]||0)+buzzShift(d.buzz,ch.tol)))}));
+    setFx(f=>{let list=(f[seat]||[]).filter(e=>e.key!==d.key);
+      // Back-off items change the actual active stack, not only the meter.
+      // Their own modifier is added after the cleanup so it keeps its duration.
+      if(d.cleanse){list=d.cleanse>900?[]:list.map(e=>({...e,shots:e.shots-d.cleanse})).filter(e=>e.shots>0);}
+      return{...f,[seat]:[...list,{key:d.key,shots:d.rack?999:d.shots,hostile:d.hostile?1:0}]};});
+    if(d.flags&&d.flags.tilt)setTilt((Math.random()<0.5?-1:1)*11);
+    redraw();};
+  // buy something for yourself
+  const spentThisTurn=bought===shotNo;
+  const buy=(id)=>{const d=DRINKS[id];
+    if(money(turn)<d.cost||spentThisTurn)return;                 // one purchase a turn
+    if((fx[turn]||[]).some(e=>e.key===id))return;                // and no double-dosing
+    setBought(shotNo); setCash(c=>({...c,[turn]:money(turn)-d.cost}));
+    applyItem(turn,{...d,key:id});
+    if(d.cleanse){const before=fx[turn]||[], removed=k=>{const e=before.find(x=>x.key===k);
+        return e&&(d.cleanse>900||e.shots<=d.cleanse);};
+      if(removed("echo"))setPending(x=>({...x,[turn]:{...(x[turn]||{}),echo:0}}));
+      if(d.cleanse>900){setPending(x=>({...x,[turn]:{echo:0,over:0,skip:(x[turn]||{}).skip||0}}));
+        if(before.some(e=>e.key==="jager"))setTilt(0);}}
+    setMsg(`${d.name} active · ${d.fx.toLowerCase()}.`);
+    if(d.flags&&d.flags.echo)setPending(x=>({...x,[turn]:{...(x[turn]||{}),echo:1}}));
+    if(d.flags&&d.flags.overdrive)setPending(x=>({...x,[turn]:{...(x[turn]||{}),over:1}}));};
+
+  // Send one over. Costs a round, and a round is only earned by missing — so it
+  // is the player sitting down who has the ammunition. Note it only HELPS you if
+  // it tips them past 85; buy a sober rival a beer and you have walked them into
+  // the Loose band for free.
+  const sendOne=(to,id)=>{
+    const sp=SPIKES[id]; if(money(turn)<sp.cost||spentThisTurn)return;
+    setBought(shotNo); setCash(c=>({...c,[turn]:money(turn)-sp.cost}));
+    if(sp.flags&&sp.flags.skim){setCash(c=>({...c,[to]:Math.max(0,money(to)-12),[turn]:money(turn)-sp.cost+12}));
+      setSending(false); setMsg(`Twelve dollars off ${charOf(seats[to].char).name}.`); return;}
+    setSending(false);
+    if(!sp.drink){ applyItem(to,{...sp,key:id,hostile:1}); setMsg(`${charOf(seats[to].char).name}: ${sp.name.toLowerCase()}.`); return; }
+    applyItem(to,{...sp,key:id,hostile:1});
+    setMsg(`${charOf(seats[to].char).name}: ${sp.name.toLowerCase()}.`);
+  };
+
+
+  // ---- computer turn --------------------------------------------------------
+  // One action per pass: place the cue ball, or call a pocket, or shoot. Doing
+  // two in a single effect run schedules two shots for the same turn.
+  useEffect(()=>{
+    if(over!=null||moving||(human&&!E.flags.mindSwap))return;
+    const t=setTimeout(()=>{
+      if(inHand){const cs=g.cueSpot||[g.w*0.24,g.h/2];cue.x=cs[0];cue.y=cs[1];setInHand(false);redraw();return;}
+      if(onEight&&called==null){setCalled(pickPocket(bs,g,pk));return;}
+      // The house drinks too — and it is watching your meter. The evil play is
+      // not drinking for itself, it is spotting a rival parked just under the
+      // line and buying the one glass that tips them over.
+      if(opts.bar&&shotNo>0&&!spentThisTurn){
+        const my=buzz[turn]||0, myCash=money(turn);
+        const tolMe=charOf(seats[turn].char).tol;
+        // 1. sober myself up before I stop being able to aim
+        if(my>=80&&myCash>=DRINKS.espresso.cost){buy("espresso");return;}
+        // 2. is anyone sitting in the 55-84 window? one double shot ends them
+        const mark=Array.from({length:count},(_,i)=>i).filter(i=>i!==turn&&alive(i))
+          .find(i=>{const b=buzz[i]||0;
+            return b>=48&&b+buzzShift(SPIKES.doubles.buzz,charOf(seats[i].char).tol)>=95;});
+        if(mark!=null&&myCash>=SPIKES.doubles.cost){sendOne(mark,"doubles");return;}
+        // 3. otherwise soften up whoever has the most balls left
+        if(myCash>=SPIKES.lights.cost+18&&Math.random()<0.4){
+          const t2=Array.from({length:count},(_,i)=>i).filter(i=>i!==turn&&alive(i))
+            .sort((a,b)=>upCount(a)-upCount(b))[0];
+          if(t2!=null){sendOne(t2,Math.random()<0.5?"lights":"dose");return;}}
+        // 4. and drink for myself while there is room on the meter
+        if(my<40&&myCash>=DRINKS.whiskey.cost+20&&Math.random()<0.5){
+          const ch2=charOf(seats[turn].char);
+          buy(ch2.pow<60?"whiskey":ch2.stroke<70?"beer":"vodka");return;}
+      }
+      const cm=charOf(seats[turn].char).move;
+      if(cm.kind==="active"&&(cm.uses-(spent[turn]||0))>0&&Math.random()<0.35&&!armed){setArmed(true);return;}
+      const s=pickShot(bs,g,legalFor(turn),seats[turn].rating||650);
+      if(s){setAngle(s.angle);setTimeout(()=>shoot(s.angle,s.speed,{a:0,b:0},0),400);}
+    },700);
+    return()=>clearTimeout(t);
+  },[turn,moving,over,inHand,human,onEight,called,legalFor,shoot,bs,g,pk,seats,cue,redraw,spent,armed,
+     opts.bar,shotNo,spentThisTurn,buzz,cash,count]);
+  useEffect(()=>()=>cancelAnimationFrame(raf.current),[]);
+
+  // ---- input ---------------------------------------------------------------
+  // Two gestures and two buttons, and that is the whole control scheme: the
+  // cloth aims, the speed bar sets pace, and only Shoot or Enter plays the ball.
+  const needCall=onEight&&called==null&&over==null;
+  const canShoot=human&&!moving&&over==null&&!inHand&&!needCall&&!E.flags.mindSwap;
+  const mv=me.move, left=mv.kind==="active"?mv.uses-(spent[turn]||0):0;
+  const canArm=canShoot&&mv.kind==="active"&&left>0;
+  useEffect(()=>{ if(power<K.minPower)setPower(K.minPower); },[K.minPower,power]);
+
+
+  // The cloth is an aiming surface and nothing else. Dragging it only ever
+  // turns the cue — no gesture here plays the shot, so you can work on your
+  // line as long as you like without ever setting it off by accident.
+  const onPoint=(kind,p)=>{
+    if(!p||!human||moving||over!=null)return;
+    if(kind==="down"&&needCall){
+      let bi=0,bd=Infinity;
+      pk.forEach((q,i)=>{const d=Math.hypot(q.cx-p.x,q.cy-p.y);if(d<bd){bd=d;bi=i;}});
+      setCalled(bi); return;}
+    if(inHand){                                  // slide it around as long as you like
+      if(kind==="down")drag.current="hand";
+      if(drag.current==="hand"){
+        const x=Math.max(BR,Math.min(g.w-BR,p.x)),y=Math.max(BR,Math.min(g.h-BR,p.y));
+        if(insideBed(g,x,y)){cue.x=x;cue.y=y;redraw();}}
+      if(kind==="up")drag.current=null;
+      return;}
+    if(!cue)return;
+    if(kind==="down")drag.current="aim";
+    if(kind!=="up"&&drag.current==="aim")
+      setAngle(E.flags.mirror?-Math.atan2(p.y-cue.y,p.x-cue.x):Math.atan2(p.y-cue.y,p.x-cue.x));
+    if(kind==="up")drag.current=null;};
+
+  // The stroke bar does the same job without needing to find the cue on the
+  // cloth: press it, pull down, let go.
+  const strokeRef=useRef(null), strokeY=useRef(0);
+  const onStroke=(kind,e)=>{
+    if(!canShoot)return;
+    const el=strokeRef.current; if(!el)return;
+    if(kind==="down"){el.setPointerCapture(e.pointerId);strokeY.current=e.clientY;grab.current=power;return;}
+    if(kind==="move"){ if(!e.buttons)return;
+      // up for more, which is the way every other slider on earth works
+      setPower(Math.max(K.minPower,Math.min(1,grab.current-(e.clientY-strokeY.current)/118))); return;}
+    // deliberately no shot on release — this control only sets the speed
+  };
+
+  // Enter plays the shot at whatever speed is dialled in. That and the Shoot
+  // button are the only two things in the whole screen that fire a ball.
+  useEffect(()=>{
+    const k=e=>{ if(!canShoot||e.key!=="Enter")return;
+      e.preventDefault(); shoot(angle,MAXV*K.speedMul*power*power,tip,elev);};
+    window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k);
+  },[canShoot,angle,power,tip,elev,shoot,K.speedMul]);
+
+  // Arrow keys nudge the line; hold shift for a hair's width.
+  useEffect(()=>{
+    const k=e=>{ if(!canShoot)return;
+      const fine=e.shiftKey?0.0006:0.004;
+      if(e.key==="ArrowLeft"){setAngle(a=>a-fine);e.preventDefault();}
+      if(e.key==="ArrowRight"){setAngle(a=>a+fine);e.preventDefault();}};
+    window.addEventListener("keydown",k);return()=>window.removeEventListener("keydown",k);
+  },[canShoot]);
+
+  const spinRef=useRef(null);
+  const onSpin=(kind,e)=>{
+    if(!canShoot)return;
+    const el=spinRef.current; if(!el)return;
+    if(kind==="down")el.setPointerCapture(e.pointerId);
+    if(kind==="up"){drag.current=null;return;}
+    if(kind==="move"&&!e.buttons)return;
+    const r=el.getBoundingClientRect();
+    let a=((e.clientX-r.left)/r.width-0.5)*2, b=-(((e.clientY-r.top)/r.height-0.5)*2);
+    const m=Math.hypot(a,b);
+    if(m>1){a/=m;b/=m;}
+    if(E.flags.noTip){setTip({a:0,b:0});return;}
+    setTip({a:+(a*K.maxTip).toFixed(3),b:+(b*K.maxTip).toFixed(3)});};
+
+  const ringFor=b=>{ if(mode!=="cutthroat"||E.flags.blindGroups)return null;
+    const o=own[b.n]; return o<0?null:charOf(seats[o].char).color; };
+  const previewV=MAXV*K.speedMul*power*power;
+  // DMT used to simulate an entire seven-second table outcome on every render,
+  // including unrelated hover/state updates. Memoizing the forecast keeps the
+  // effect responsive while still recalculating for every meaningful aim edit.
+  const endPreview=useMemo(()=>cue&&!cue.in&&E.flags.seeEnd
+    ?restingPlaces(bs,g,angle,previewV,tip,elev):null,
+    [cue&&cue.x,cue&&cue.y,angle,previewV,tip.a,tip.b,elev,shotNo,turn,E.flags.seeEnd,g]);
+  const aim=cue&&!cue.in?{
+    show:human&&!moving&&over==null&&!inHand&&!needCall&&!E.flags.noPreview,
+    stick:!moving&&over==null&&!inHand,
+    x:cue.x,y:cue.y,angle,pull:power,tip,
+    ends:endPreview,
+    p:predictPath(cue,angle+(E.flags.falseLine?0.055:0),previewV,tip,elev,bs,g,
+        armed&&me.move.name==="Every Route"?5:((E.flags.falseLine||E.flags.seeAll)?5:K.rails)),
+    ghostLine:E.flags.doubleVision?predictPath(cue,angle+0.07,previewV,tip,elev,bs,g,K.rails):null,
+    live:false,objLine:K.objLine||armed||E.flags.seeAll,
+    cueLine:K.cueLine||armed||E.flags.seeAll,stop:K.stopMark||armed||E.flags.seeAll}:null;
+
+  // Full reset: new rack, sober everybody up, refill every tab.
+  const restart=()=>{ballsRef.current=buildRack(g,racks,opts.balls?powerSet:null);setPly(0);setSeatTurn(0);setSide(null);
+    setOver(null);setInHand(false);setPower(0.42);setTip({a:0,b:0});setElev(0);setCalled(null);setSpent({});setArmed(false);
+    setBuzz(initialBuzz?{0:initialBuzz}:{});setFx({});setCash({0:initialCash});setTilt(0);setSending(false);setBarOpen(false);
+    setMissStreak(0);setMagnetSurge(false);setPowerPulse("");reported.current=false;
+    setBought(-1);setPending({});setShotNo(0);setMsg("Break.");redraw();};
+
+  const groupLabel=i=>{
+    if(mode==="cutthroat")return `${upCount(i)} up`;
+    const gp=side&&side[sideOf(i)];
+    return (gp?(gp==="solid"?"Solids":"Stripes"):"Open")+(teams&&count>2?` · Side ${sideOf(i)+1}`:"");};
+
+  return(<Shell wide>
+    <Head title="Chalk" right={<>
+      {!campaign&&<button onClick={restart} style={btnGhost}>Rerack</button>}
+      {!campaign&&<button onClick={onSetup} style={btnGhost}>Setup</button>}
+      <button onClick={onQuit} style={btnGhost}>Quit</button></>}/>
+
+    {campaign&&<div style={{...panel,padding:"9px 12px",marginBottom:10,display:"flex",gap:14,alignItems:"center",flexWrap:"wrap",borderColor:"rgba(201,138,75,.45)"}}>
+      <b style={{fontFamily:F.display,color:"#efc486"}}>King of the Table</b>
+      <span style={{fontFamily:F.mono,fontSize:10,color:C.ink2}}>{campaign.challenger} · {campaign.rating} RATING</span>
+      <span style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>SERIES {campaign.us}–{campaign.them} · FIRST TO {campaign.target}</span>
+      <span style={{marginLeft:"auto",fontFamily:F.mono,fontSize:10,color:C.good}}>BANK ${campaign.bank} · BUZZ {Math.round(E.buzz)}</span>
+    </div>}
+
+    <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
+      {seats.slice(0,count).map((s,i)=>{const ch=charOf(s.char),act=i===turn&&over==null,out=!alive(i);
+        return(<div key={i} style={{...panel,padding:"9px 12px",display:"flex",alignItems:"center",gap:10,flex:"1 1 168px",
+          opacity:out?.4:1,border:act?`1px solid ${C.accentDim}`:`1px solid ${C.line}`,background:act?C.panel2:C.panel}}>
+          <span style={{width:26,height:26,borderRadius:26,background:ch.color,display:"flex",alignItems:"center",
+            justifyContent:"center",fontFamily:F.display,fontWeight:700,fontSize:12,color:"#12140f",flexShrink:0}}>{ch.name[0]}</span>
+          <span style={{minWidth:0,flex:1}}>
+            <span style={{display:"block",fontSize:13,fontWeight:600,color:C.ink,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{ch.name}</span>
+            <span style={{display:"block",fontFamily:F.mono,fontSize:9.5,color:act?C.accent:C.muted}}>
+              {out?"OUT":(effOf(i).flags.blindGroups?"???":groupLabel(i))}{s.kind==="cpu"?" · CPU":""}</span>
+            {opts.bar&&<span style={{display:"block",marginTop:4}}>
+              <span style={{display:"block",height:3,borderRadius:3,background:C.line,overflow:"hidden"}}>
+                <span style={{display:"block",height:"100%",width:`${Math.min(100,(buzz[i]||0)/1.2)}%`,
+                  background:(buzz[i]||0)>=85?C.warn:(buzz[i]||0)>=25?C.good:C.muted}}/></span>
+              <span style={{fontFamily:F.mono,fontSize:8.5,color:(buzz[i]||0)>=85?C.warn:C.muted}}>
+                {bandOf(buzz[i]||0).toUpperCase()}{opts.bar?` · $${money(i)}`:""}</span></span>}
+            </span>
+          {mode!=="cutthroat"&&!effOf(i).flags.blindGroups&&<span style={{fontFamily:F.mono,fontSize:11,color:C.muted}}>{upCount(i)}</span>}
+          {sending&&i!==turn&&alive(i)&&<button onClick={()=>sendOne(i,sending)}
+            style={{...btn,padding:"6px 9px",fontSize:11,borderColor:C.warn,color:C.warn}}>On me</button>}
+        </div>);})}
+    </div>
+
+    {opts.balls&&POWER_SETS[powerSet]&&<div style={{display:"flex",gap:9,alignItems:"center",flexWrap:"wrap",margin:"-2px 0 10px",padding:"7px 10px",borderRadius:9,
+      background:`${POWER_SETS[powerSet].color}12`,border:`1px solid ${POWER_SETS[powerSet].color}55`}}>
+      <span style={{fontFamily:F.mono,fontSize:9,color:POWER_SETS[powerSet].color}}>POWER SET</span>
+      <b style={{fontSize:12.5}}>{POWER_SETS[powerSet].name}</b>
+      <span style={{fontSize:11,color:C.muted}}>{POWER_SETS[powerSet].trigger}</span>
+      <span style={{fontFamily:F.mono,fontSize:8.5,color:C.muted}}>{Object.entries(POWER_SETS[powerSet].map).map(([n,p])=>`${n}:${BALLS[p].name}`).join(" · ")}</span>
+      {powerPulse&&<span style={{marginLeft:"auto",fontFamily:F.mono,fontSize:9.5,color:"#f2cf8b"}}>{powerPulse}</span>}
+    </div>}
+
+    <div style={{...panel,padding:10,background:"#0d0f11"}}>
+      <TableArt tid={tid} cloth={cloth} balls={bs} aim={aim} onPoint={onPoint}
+        ringFor={ringFor} calls={needCall?pk:null} called={called} blank={E.flags.blankBalls}
+        tfx={{khole:E.flags.khole,fastCloth:E.flags.fastCloth,phase:E.flags.phase,
+              melt:E.flags.phase,steady:E.flags.steady,echo:E.flags.echo,
+              ends:aim&&aim.ends,noPreview:E.flags.noPreview,
+              tilt:tilt}}/></div>
+
+
+    {/* WHAT IS RUNNING RIGHT NOW — the thing you cannot play without */}
+    {(()=>{const live=(fx[turn]||[]).map(e=>({e,d:DRINKS[e.key]||SPIKES[e.key]})).filter(x=>x.d);
+      if(!live.length&&!armed&&!needCall)return null;
+      return(<div style={{display:"flex",gap:7,flexWrap:"wrap",marginTop:10,alignItems:"center"}}>
+        <span style={{...label,fontSize:9.5}}>In effect</span>
+        {armed&&<span style={{display:"inline-flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:8,
+          border:`1px solid ${me.color}`,background:`${me.color}22`}}>
+          <span style={{width:7,height:7,borderRadius:7,background:me.color}}/>
+          <b style={{fontSize:12,color:C.ink}}>{mv.name}</b>
+          <span style={{fontFamily:F.mono,fontSize:9,color:C.muted}}>ARMED · {me.name.toUpperCase()}</span></span>}
+        {live.map(({e,d})=>{const look=fxLook(e.key),col=e.hostile?C.warn:look.ink;
+          return(<span key={e.key} title={d.note} style={{display:"inline-flex",alignItems:"center",gap:8,
+            padding:"6px 10px 6px 7px",borderRadius:9,border:`1px solid rgba(${look.rgb},.38)`,
+            borderLeft:`3px solid ${col}`,background:`rgba(${look.rgb},.09)`,
+            boxShadow:`inset 0 1px rgba(255,255,255,.025)`,animation:"fx-enter .22s ease-out both"}}>
+            <span style={{fontFamily:F.mono,fontSize:7.5,fontWeight:500,letterSpacing:.7,color:col,
+              padding:"3px 5px",borderRadius:4,background:`rgba(${look.rgb},.12)`}}>{look.mark}</span>
+            <b style={{fontSize:12,color:C.ink,fontWeight:600}}>{d.name}</b>
+            <span style={{fontFamily:F.mono,fontSize:8.5,color:C.muted}}>
+              {e.shots>900?"RACK":`${e.shots} SHOT${e.shots>1?"S":""}`}{e.hostile?" · HOSTILE":""}</span></span>);})}
+      </div>);})()}
+
+    <div style={{display:"flex",gap:12,alignItems:"flex-end",marginTop:12,flexWrap:"wrap"}}>
+      <div style={{flex:"0 0 auto"}}>
+        <div style={{...label,marginBottom:5,fontSize:9.5}}>Tip</div>
+        <div ref={spinRef} onPointerDown={e=>onSpin("down",e)} onPointerMove={e=>onSpin("move",e)}
+          onPointerUp={e=>onSpin("up",e)}
+          style={{width:56,height:56,borderRadius:56,background:"#f4f2ec",position:"relative",
+            border:`1px solid ${C.line}`,cursor:canShoot?"crosshair":"default",opacity:canShoot?1:.45,
+            touchAction:"none",boxShadow:"inset -4px -5px 10px rgba(0,0,0,.28)"}}>
+          <div style={{position:"absolute",left:"50%",top:"50%",width:"100%",height:1,
+            background:"rgba(0,0,0,.12)",transform:"translate(-50%,-50%)"}}/>
+          <div style={{position:"absolute",left:"50%",top:"50%",width:1,height:"100%",
+            background:"rgba(0,0,0,.12)",transform:"translate(-50%,-50%)"}}/>
+          <div style={{position:"absolute",left:"50%",top:"50%",width:`${K.maxTip*2*56}px`,
+            height:`${K.maxTip*2*56}px`,borderRadius:"50%",border:"1px dashed rgba(0,0,0,.28)",
+            transform:"translate(-50%,-50%)",pointerEvents:"none"}}/>
+          <div style={{position:"absolute",width:12,height:12,borderRadius:12,background:"#3f6d8c",
+            border:"2px solid #fff",boxShadow:"0 1px 3px rgba(0,0,0,.4)",
+            left:`calc(50% + ${tip.a*56}px)`,top:`calc(50% - ${tip.b*56}px)`,
+            transform:"translate(-50%,-50%)",pointerEvents:"none"}}/>
+        </div>
+        <div style={{fontFamily:F.mono,fontSize:8.5,color:C.muted,marginTop:4,textAlign:"center",width:56}}>
+          {tip.b>0.14?"FOLLOW":tip.b<-0.14?"DRAW":"CENTRE"}{Math.abs(tip.a)>0.14?(tip.a>0?"·R":"·L"):""}</div>
+      </div>
+
+      <div style={{flex:"0 0 auto",width:86}}>
+        <div style={{...label,marginBottom:5,fontSize:9.5}}>Elevation</div>
+        <input type="range" min="0" max={Math.round(K.maxElev)} step="1" value={Math.round(elev*180/Math.PI)}
+          disabled={!canShoot} onChange={e=>setElev(+e.target.value*Math.PI/180)}
+          style={{width:86,accentColor:C.accent,opacity:canShoot?1:.45}}/>
+        <div style={{fontFamily:F.mono,fontSize:8.5,color:elev>0.02?C.accent:C.muted,marginTop:4}}>
+          {Math.round(elev*180/Math.PI)}°/{Math.round(K.maxElev)}°{elev>0.02&&Math.abs(tip.a)>0.12?" CURVE":""}</div>
+      </div>
+
+      <div style={{flex:"0 0 auto"}}>
+        <div style={{...label,marginBottom:5,fontSize:9.5}}>Speed</div>
+        <div ref={strokeRef} onPointerDown={e=>onStroke("down",e)} onPointerMove={e=>onStroke("move",e)}
+          onPointerUp={e=>onStroke("up",e)}
+          style={{width:38,height:56,borderRadius:9,border:`1px solid ${C.line}`,background:C.panel,
+            position:"relative",overflow:"hidden",touchAction:"none",
+            cursor:canShoot?"grab":"default",opacity:canShoot?1:.45}}>
+          <div style={{position:"absolute",left:0,right:0,bottom:0,height:`${power*100}%`,
+            background:`linear-gradient(180deg,${C.accent},${C.accentDim})`}}/>
+          <div style={{position:"absolute",left:0,right:0,bottom:`calc(${power*100}% - 1px)`,height:2,
+            background:"#fff",opacity:.5,pointerEvents:"none"}}/>
+        </div>
+        <div style={{fontFamily:F.mono,fontSize:8.5,color:C.muted,marginTop:4,textAlign:"center",width:38}}>UP</div>
+      </div>
+
+      {mv.kind==="active"&&<button onClick={()=>setArmed(a=>!a)} disabled={!canArm}
+        style={{...btn,padding:"11px 13px",borderColor:armed?me.color:C.line,
+          background:armed?me.color:C.panel2,color:armed?"#12140f":C.ink,
+          opacity:canArm||armed?1:.35,cursor:canArm?"pointer":"default",textAlign:"left"}}>
+        <span style={{display:"block",fontSize:12.5,fontWeight:600}}>{mv.name}</span>
+        <span style={{display:"block",fontFamily:F.mono,fontSize:8.5,
+          color:armed?"#12140f":C.muted}}>{me.name.toUpperCase()} · {armed?"ARMED":`${left} LEFT`}</span></button>}
+
+      {opts.bar&&<button onClick={()=>setBarOpen(true)}
+        style={{...btn,padding:"11px 13px",textAlign:"left",
+          borderColor:(fx[turn]||[]).length?C.accent:C.line}}>
+        <span style={{display:"block",fontSize:12.5,fontWeight:600}}>The bar</span>
+        <span style={{display:"block",fontFamily:F.mono,fontSize:8.5,color:C.muted}}>
+          ${money(turn)} · {Math.round(E.buzz)} BUZZ</span></button>}
+
+      {inHand&&<button onClick={()=>{setInHand(false);redraw();}}
+        style={{...btnPrimary,padding:"14px 18px",background:C.warn}}>Place ball</button>}
+
+      <button onClick={()=>shoot(angle,MAXV*K.speedMul*power*power,tip,elev)} disabled={!canShoot}
+        style={{...btnPrimary,padding:"11px 20px",opacity:canShoot?1:.35,
+          cursor:canShoot?"pointer":"default",textAlign:"center"}}>
+        <span style={{display:"block",fontSize:14}}>Shoot</span>
+        <span style={{display:"block",fontFamily:F.mono,fontSize:9.5,opacity:.75}}>
+          {(MAXV*K.speedMul*power*power/17.6).toFixed(1)} MPH</span></button>
+
+      <div style={{display:"flex",gap:5}}>
+        <button onClick={()=>setAngle(a=>a-0.0025)} disabled={!canShoot}
+          style={{...btnGhost,padding:"11px 11px",opacity:canShoot?1:.4}}>‹</button>
+        <button onClick={()=>setAngle(a=>a+0.0025)} disabled={!canShoot}
+          style={{...btnGhost,padding:"11px 11px",opacity:canShoot?1:.4}}>›</button>
+      </div>
+
+      <div style={{flex:"1 1 200px",minWidth:170,fontSize:12,color:C.ink2,lineHeight:1.45}}>
+        {over!=null ? <b style={{color:C.good,fontSize:14}}>
+            {mode==="eight"&&count>2?`Side ${sideOf(over)+1} takes it.`:`${charOf(seats[over].char).name} takes the rack.`}
+            {msg?<span style={{display:"block",color:C.ink2,fontWeight:400,fontSize:12}}>{msg}</span>:null}</b>
+        : needCall ? <b style={{color:C.warn}}>You're on the eight — tap a pocket to call it.</b>
+        : inHand ? <b style={{color:C.warn}}>Ball in hand — drag it anywhere, then Place ball.</b>
+        : moving ? <span style={{color:C.muted}}>Balls rolling…</span>
+        : <><b style={{color:C.ink}}>{me.name}</b> to shoot. {msg}</>}
+        {canShoot&&<div style={{fontFamily:F.mono,fontSize:9,color:C.muted,marginTop:5,lineHeight:1.5}}>
+          DRAG THE CLOTH TO AIM · ← → FINE-TUNE · ENTER TO SHOOT</div>}
+      </div>
+      {over!=null&&(campaign?<span style={{fontFamily:F.mono,fontSize:10,color:C.muted}}>Settling the rack…</span>:<button onClick={restart} style={btnPrimary}>Rerack</button>)}
+      {called!=null&&over==null&&!moving&&<button onClick={()=>setCalled(null)} style={btnGhost}>Recall pocket</button>}
+
+    {inHand&&human&&over==null&&<div style={{...panel,padding:"10px 14px",marginTop:10,
+      borderColor:C.warn,background:"rgba(201,138,75,.12)",display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+      <span style={{width:9,height:9,borderRadius:9,background:C.warn,flexShrink:0}}/>
+      <b style={{fontSize:13,color:C.warn}}>Ball in hand</b>
+      <span style={{fontSize:12.5,color:C.ink2}}>{msg||"A foul was called."} Drag the cue ball anywhere you like,
+        move it as often as you want, then press Place ball.</span></div>}
+
+    {opts.bar&&barOpen&&human&&over==null&&!moving&&(()=>{
+      const preBreak=shotNo===0, band=E.band;
+      const bandCol=band==="Over"||band==="Cut off"?C.warn:band==="Sober"?C.muted:C.good;
+      // One card shape for everything on sale, so the four shelves read as one
+      // menu instead of four different widgets.
+      const Card=({id,d,spike})=>{
+        const on=!spike&&(fx[turn]||[]).some(e=>e.key===id);
+        const afford=money(turn)>=d.cost&&!spentThisTurn&&!on&&!preBreak;
+        const loud=d.fx===d.fx.toUpperCase();
+        const look=fxLook(id);
+        return(<button key={id} disabled={!afford}
+          onClick={()=>{if(spike){setSending(id);}else{buy(id);}setBarOpen(false);}}
+          style={{display:"flex",flexDirection:"column",gap:5,padding:"10px 11px",borderRadius:11,
+            textAlign:"left",cursor:afford?"pointer":"default",
+            border:`1px solid ${on?C.good:sending===id?C.warn:look?`rgba(${look.rgb},.28)`:C.line}`,
+            borderTop:look?`2px solid rgba(${look.rgb},.72)`:undefined,
+            background:on?"rgba(106,168,138,.10)":C.panel2,
+            opacity:afford||on?1:.4}}>
+          <span style={{display:"flex",alignItems:"baseline",gap:8}}>
+            <b style={{fontSize:13,fontWeight:600,color:C.ink,flex:1}}>{d.name}</b>
+            {look&&<span style={{fontFamily:F.mono,fontSize:7.5,letterSpacing:.65,color:look.ink,
+              padding:"2px 4px",borderRadius:4,background:`rgba(${look.rgb},.10)`}}>{look.mark}</span>}
+            <span style={{fontFamily:F.mono,fontSize:11,color:afford?C.good:C.muted}}>${d.cost}</span></span>
+          <span style={{fontFamily:F.mono,fontSize:8.5,letterSpacing:.5,
+            color:look?look.ink:loud?(spike?C.warn:C.accent):C.muted}}>{d.fx.toUpperCase()}</span>
+          <span style={{fontSize:10.5,lineHeight:1.4,color:C.muted,display:"-webkit-box",
+            WebkitLineClamp:3,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{d.note}</span>
+          <span style={{display:"flex",gap:8,marginTop:"auto",paddingTop:3,
+            fontFamily:F.mono,fontSize:8.5,color:C.muted}}>
+            {d.buzz!==0&&<span style={{color:d.buzz>0?C.warn:C.good}}>
+              {d.buzz>0?"+":""}{d.buzz} BUZZ</span>}
+            <span>{d.rack?"ALL RACK":`${d.shots} SHOT${d.shots>1?"S":""}`}</span>
+            {on&&<span style={{color:C.good,marginLeft:"auto"}}>ACTIVE</span>}</span>
+        </button>);};
+      const Shelf=({title,sub,ids,spike})=>(<div style={{marginTop:16}}>
+        <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:8}}>
+          <span style={{fontFamily:F.display,fontSize:13,fontWeight:600,letterSpacing:.3,color:C.ink}}>{title}</span>
+          <span style={{fontSize:11,color:C.muted}}>{sub}</span></div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(184px,1fr))",gap:9}}>
+          {ids.map(id=><Card key={id} id={id} d={spike?SPIKES[id]:DRINKS[id]} spike={spike}/>)}</div></div>);
+      return(<div onClick={()=>setBarOpen(false)}
+        style={{position:"fixed",inset:0,zIndex:90,background:"rgba(4,5,7,.80)",
+          display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div onClick={e=>e.stopPropagation()} className="thin"
+          style={{...panel,padding:0,width:"min(860px,100%)",maxHeight:"88vh",overflowY:"auto",
+            boxShadow:"0 30px 90px rgba(0,0,0,.75)"}}>
+
+          <div style={{position:"sticky",top:0,zIndex:2,background:C.panel,
+            borderBottom:`1px solid ${C.line}`,padding:"14px 18px",
+            display:"flex",alignItems:"center",gap:18,flexWrap:"wrap"}}>
+            <div>
+              <div style={{fontFamily:F.display,fontSize:19,fontWeight:600,letterSpacing:-.2}}>The bar</div>
+              <div style={{fontSize:11,color:preBreak?C.warn:C.muted,marginTop:2}}>
+                {preBreak?"Closed until the break is over":
+                 spentThisTurn?"You have already bought this turn":"One purchase a turn"}</div></div>
+
+            <div style={{marginLeft:"auto",display:"flex",gap:20,alignItems:"center",flexWrap:"wrap"}}>
+              <div>
+                <div style={{...label,fontSize:9}}>Tab</div>
+                <div style={{fontFamily:F.mono,fontSize:20,color:C.good,lineHeight:1.1}}>${money(turn)}</div></div>
+              <div style={{minWidth:150}}>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <span style={{...label,fontSize:9}}>{me.name} · tol {me.tol}</span>
+                  <span style={{fontFamily:F.mono,fontSize:9.5,color:bandCol}}>
+                    {band.toUpperCase()} {Math.round(E.buzz)}</span></div>
+                <div style={{height:6,borderRadius:4,background:C.line,marginTop:5,position:"relative",overflow:"hidden"}}>
+                  <div style={{position:"absolute",inset:0,width:`${Math.min(100,E.buzz/1.2)}%`,
+                    background:`linear-gradient(90deg,${C.good},${bandCol})`}}/>
+                  {[20,45,75,95].map(t=><div key={t} style={{position:"absolute",top:0,bottom:0,
+                    left:`${t/1.2}%`,width:1,background:"rgba(255,255,255,.22)"}}/>)}</div></div>
+              <button onClick={()=>setBarOpen(false)} style={{...btnGhost,padding:"9px 13px"}}>Close</button>
+            </div>
+          </div>
+
+          <div style={{padding:"4px 18px 18px"}}>
+            <Shelf title="Boost" sub="pure stat trades — no surprises" ids={byRole("boost")}/>
+            <Shelf title="Back off" sub="lower buzz and shorten every effect currently on you" ids={byRole("back")}/>
+            <Shelf title="Effects" sub="these change a rule, not a number" ids={byRole("effect")}/>
+            <Shelf title="On them" sub="bought for somebody else — pick the player after" ids={SPIKE_IDS} spike/>
+            {sending&&<div style={{marginTop:14,padding:"11px 13px",borderRadius:10,
+              border:`1px solid ${C.warn}`,background:"rgba(201,138,75,.10)",fontSize:12,color:C.ink2,lineHeight:1.5}}>
+              <b style={{color:C.warn}}>{SPIKES[sending].name}</b> is on your tab. Close this and press
+              <b> On me</b> on whoever is getting it.
+              <button onClick={()=>setSending(false)} style={{...btnGhost,padding:"4px 10px",fontSize:11,marginLeft:10}}>cancel</button></div>}
+          </div>
+        </div></div>);})()}
+
+
+    </div>
+  </Shell>);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
